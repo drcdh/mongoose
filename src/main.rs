@@ -1,3 +1,5 @@
+use rand::prelude::random;
+
 use bevy::{
     math::bounding::{Aabb2d, BoundingCircle, IntersectsVolume},
     prelude::*,
@@ -5,9 +7,8 @@ use bevy::{
 };
 
 const MONGOOSE_SIZE: Vec2 = Vec2::new(20.0, 20.0);
-const MONGOOSE_SPEED: f32 = 500.0;
+const MONGOOSE_SPEED: f32 = 200.0;
 
-const BERRY_STARTING_POSITION: Vec3 = Vec3::new(0.0, -50.0, 1.0);
 const BERRY_DIAMETER: f32 = 15.0;
 
 const BACKGROUND_COLOR: Color = Color::rgb(0.6, 0.9, 0.2);
@@ -39,8 +40,10 @@ struct Score(usize);
 #[derive(Component)]
 struct ScoreboardUi;
 
+#[derive(Resource)]
+struct BerrySpawnTimer(Timer);
 
-fn spawn_mongoose(commands: &mut Commands) {
+fn spawn_mongoose(mut commands: Commands) {
     commands.spawn((
         SpriteBundle {
             transform: Transform {
@@ -60,27 +63,40 @@ fn spawn_mongoose(commands: &mut Commands) {
     ));
 }
 
-fn setup(
+fn spawn_berry(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    time: Res<Time>,
+    mut timer: ResMut<BerrySpawnTimer>,
+) {
+    if timer.0.tick(time.delta()).just_finished() {
+        commands.spawn((
+            MaterialMesh2dBundle {
+                mesh: meshes.add(Circle::default()).into(),
+                material: materials.add(BERRY_COLOR),
+                transform: Transform::from_translation(Vec3::new(
+                    random::<f32>()*200.0-100.0,
+                    random::<f32>()*200.0-100.0,
+                    1.0
+                ))
+                    .with_scale(Vec2::splat(BERRY_DIAMETER).extend(1.0)),
+                ..default()
+            },
+            Berry,
+            Collider,
+        ));
+    }
+}
+
+fn setup(
+    mut commands: Commands,
 ) {
     commands.spawn(Camera2dBundle::default());
 
-    spawn_mongoose(&mut commands);
-
-    commands.spawn((
-        MaterialMesh2dBundle {
-            mesh: meshes.add(Circle::default()).into(),
-            material: materials.add(BERRY_COLOR),
-            transform: Transform::from_translation(BERRY_STARTING_POSITION)
-                .with_scale(Vec2::splat(BERRY_DIAMETER).extend(1.0)),
-            ..default()
-        },
-        Berry,
-        Collider,
-    ));
+    spawn_mongoose(commands);
 }
+
 
 fn move_mongoose(
     keyboard_input: Res<ButtonInput<KeyCode>>,
@@ -164,6 +180,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .insert_resource(Score(0))
         .insert_resource(ClearColor(BACKGROUND_COLOR))
+        .insert_resource(BerrySpawnTimer(Timer::from_seconds(3.0, TimerMode::Repeating)))
         .add_event::<CollisionEvent>()
         .add_systems(Startup, setup)
         // Add our gameplay simulation systems to the fixed timestep schedule
@@ -174,6 +191,7 @@ fn main() {
                 apply_velocity,
                 move_mongoose,
                 check_for_collisions,
+                spawn_berry,
             )
             .chain(),
         )
