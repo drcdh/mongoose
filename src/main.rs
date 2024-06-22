@@ -6,6 +6,9 @@ use bevy::{
     sprite::MaterialMesh2dBundle,
 };
 
+const SCOREBOARD_FONT_SIZE: f32 = 40.0;
+const SCOREBOARD_TEXT_PADDING: Val = Val::Px(5.0);
+
 const MONGOOSE_SIZE: Vec2 = Vec2::new(20.0, 20.0);
 const MONGOOSE_SPEED: f32 = 200.0;
 
@@ -14,6 +17,8 @@ const BERRY_DIAMETER: f32 = 15.0;
 const BACKGROUND_COLOR: Color = Color::rgb(0.6, 0.9, 0.2);
 const MONGOOSE_COLOR: Color = Color::rgb(0.8, 0.6, 0.0);
 const BERRY_COLOR: Color = Color::rgb(1.0, 0.5, 0.5);
+const TEXT_COLOR: Color = Color::rgb(0.5, 0.5, 1.0);
+const SCORE_COLOR: Color = Color::rgb(1.0, 0.5, 0.5);
 
 #[derive(Component)]
 struct MongooseHead;
@@ -34,16 +39,16 @@ struct Collider;
 struct CollisionEvent;
 
 // This resource tracks the game's score
-#[derive(Resource, Deref, DerefMut)]
-struct Score(usize);
+#[derive(Resource)]
+struct Scoreboard { score: usize }
 
 #[derive(Component)]
-struct ScoreboardUi;
+struct ScoreboardUI;
 
 #[derive(Resource)]
 struct BerrySpawnTimer(Timer);
 
-fn spawn_mongoose(mut commands: Commands) {
+fn spawn_mongoose(commands: &mut Commands) {
     commands.spawn((
         SpriteBundle {
             transform: Transform {
@@ -60,6 +65,29 @@ fn spawn_mongoose(mut commands: Commands) {
         MongooseHead,
         Collider,
         Velocity(Vec2::new(0.0, 0.0)),
+    ));
+}
+
+fn spawn_scoreboard(commands: &mut Commands) {
+    commands.spawn((
+        ScoreboardUI,
+        TextBundle::from_sections([
+            TextSection::new(
+                "Score: ",
+                TextStyle {
+                    font_size: SCOREBOARD_FONT_SIZE,
+                    color: TEXT_COLOR,
+                    ..default()
+                },
+            ),
+            TextSection::from_style(
+                TextStyle {
+                    font_size: SCOREBOARD_FONT_SIZE,
+                    color: SCORE_COLOR,
+                    ..default()
+                }
+            ),
+        ]),
     ));
 }
 
@@ -94,7 +122,8 @@ fn setup(
 ) {
     commands.spawn(Camera2dBundle::default());
 
-    spawn_mongoose(commands);
+    spawn_mongoose(&mut commands);
+    spawn_scoreboard(&mut commands);
 }
 
 
@@ -146,7 +175,7 @@ fn berry_collision(
 
 fn check_for_collisions(
     mut commands: Commands,
-    mut score: ResMut<Score>,
+    mut scoreboard: ResMut<Scoreboard>,
     mut mongoose_query: Query<&Transform, With<MongooseHead>>,
     collider_query: Query<(Entity, &Transform, Option<&Berry>), With<Collider>>,
     mut collision_events: EventWriter<CollisionEvent>,
@@ -169,16 +198,21 @@ fn check_for_collisions(
             // Berries should be despawned and increment the scoreboard on collision
             if maybe_berry.is_some() {
                 commands.entity(collider_entity).despawn();
-                **score += 1;
+                scoreboard.score += 1;
             }
         }
     }
 }
 
+fn update_scoreboard(scoreboard: Res<Scoreboard>, mut query: Query<&mut Text, With<ScoreboardUI>>) {
+    let mut text = query.single_mut();
+    text.sections[1].value = scoreboard.score.to_string();
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .insert_resource(Score(0))
+        .insert_resource(Scoreboard { score: 0 })
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(BerrySpawnTimer(Timer::from_seconds(3.0, TimerMode::Repeating)))
         .add_event::<CollisionEvent>()
@@ -192,8 +226,14 @@ fn main() {
                 move_mongoose,
                 check_for_collisions,
                 spawn_berry,
+            ).chain(),
+        )
+        .add_systems(
+            Update,
+            (
+                update_scoreboard,
+                bevy::window::close_on_esc,
             )
-            .chain(),
         )
         .run();
 }
