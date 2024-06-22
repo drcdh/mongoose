@@ -1,7 +1,11 @@
 use rand::prelude::random;
 
 use bevy::{
-    math::bounding::{Aabb2d, BoundingCircle, IntersectsVolume},
+    math::bounding::{
+        Aabb2d,
+        BoundingCircle,
+        IntersectsVolume,
+    },
     prelude::*,
     sprite::MaterialMesh2dBundle,
 };
@@ -25,6 +29,15 @@ struct MongooseHead;
 
 #[derive(Component)]
 struct MongooseBody;
+
+#[derive(Component)]
+struct SnakeHead;
+
+#[derive(Component)]
+struct SnakeSegment;
+
+#[derive(Component)]
+struct Snake;
 
 #[derive(Component)]
 struct Berry;
@@ -117,13 +130,78 @@ fn spawn_berry(
     }
 }
 
+fn spawn_snake(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+) {
+    let texture = asset_server.load("snake.png");
+    let texture_atlas_layout = texture_atlas_layouts.add(
+        TextureAtlasLayout::from_grid(Vec2::splat(40.0), 3, 1, None, None)
+    );
+    let x = 100.0;//random::<f32>()*300.0-150.0;
+    let y = 100.0;//random::<f32>()*300.0-150.0;
+    let snake = commands.spawn((
+        SpriteBundle::default(),
+        Snake,
+    )).id();
+    let head = commands.spawn((
+        SpriteBundle {
+            transform: Transform::from_xyz(x, y, 0.0),
+            texture: texture.clone(),
+            ..default()
+        },
+        TextureAtlas {
+            layout: texture_atlas_layout.clone(),
+            index: 0,
+        },
+        SnakeHead,
+        Collider,
+        Velocity(Vec2::new(0.0, 0.0)),
+    )).id();
+    commands.entity(snake).add_child(head);
+    let body = commands.spawn((
+        SpriteBundle {
+            transform: Transform::from_xyz(x+40.0, y, 0.0),
+            texture: texture.clone(),
+            ..default()
+        },
+        TextureAtlas {
+            layout: texture_atlas_layout.clone(),
+            index: 1,
+        },
+        SnakeSegment,
+        Collider,
+        Velocity(Vec2::new(0.0, 0.0)),
+    )).id();
+    commands.entity(snake).add_child(body);
+    let tail = commands.spawn((
+        SpriteBundle {
+            transform: Transform::from_xyz(x+80.0, y, 0.0),
+            texture: texture.clone(),
+            ..default()
+        },
+        TextureAtlas {
+            layout: texture_atlas_layout.clone(),
+            index: 2,
+        },
+        SnakeSegment,
+        Collider,
+        Velocity(Vec2::new(0.0, 0.0)),
+    )).id();
+    commands.entity(snake).add_child(tail);
+}
+
 fn setup(
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
     commands.spawn(Camera2dBundle::default());
 
     spawn_mongoose(&mut commands);
     spawn_scoreboard(&mut commands);
+    spawn_snake(commands, asset_server, texture_atlas_layouts);
 }
 
 
@@ -157,6 +235,27 @@ fn move_mongoose(
     // TODO bounding
     mongoose_transform.translation.x = new_mongoose_x_position;
     mongoose_transform.translation.y = new_mongoose_y_position;
+}
+
+fn move_snakes(
+    mut snakes_query: Query<(Entity, &Children), With<Snake>>,
+    mut transforms_query: Query<&mut Transform, With<Sprite>>,
+    time: Res<Time>,
+) {
+    let delta_x = -100.0*time.delta_seconds(); // FIXME
+    let delta_y = 0.0 as f32;
+    for (_, segments_entities) in &mut snakes_query {
+        let head = segments_entities.get(0).unwrap();
+        let mut head_transform = transforms_query.get_mut(*head).unwrap();
+        head_transform.translation.x += delta_x;
+        head_transform.translation.y += delta_y;
+        // Check for turns and swap deltas as needed
+        for segment in segments_entities.get(1..).unwrap().iter() {
+            let mut segment_transform = transforms_query.get_mut(*segment).unwrap();
+            segment_transform.translation.x += delta_x;
+            segment_transform.translation.y += delta_y;
+        }
+    }
 }
 
 fn apply_velocity(mut query: Query<(&mut Transform, &Velocity)>, time: Res<Time>) {
@@ -224,6 +323,7 @@ fn main() {
             (
                 apply_velocity,
                 move_mongoose,
+                move_snakes,
                 check_for_collisions,
                 spawn_berry,
             ).chain(),
