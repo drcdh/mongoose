@@ -86,9 +86,14 @@ struct Plan {
 #[derive(Component)]
 struct Berry;
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 struct Scoreboard {
-    score: usize,
+    berries_eaten_by_mongoose: usize,
+    berries_eaten_by_snakes: usize,
+    snakes_killed: usize,
+    mice_eaten_by_mongoose: usize,
+    mice_eaten_by_snakes: usize,
+    mice_escaped: usize,
 }
 
 #[derive(Component)]
@@ -437,14 +442,21 @@ fn eat_berries(
     for (berry, berry_position) in &berry_positions {
         if mongoose_position == berry_position {
             commands.entity(berry).despawn();
-            scoreboard.score += 1;
+            scoreboard.berries_eaten_by_mongoose += 1;
+        } else {
+            for snake_position in &snake_positions {
+                if snake_position == berry_position {
+                    commands.entity(berry).despawn();
+                    scoreboard.berries_eaten_by_snakes += 1;
+                }
+            }
         }
     }
 }
 
 fn update_scoreboard(scoreboard: Res<Scoreboard>, mut query: Query<&mut Text, With<ScoreboardUI>>) {
     let mut text = query.single_mut();
-    text.sections[1].value = scoreboard.score.to_string();
+    text.sections[1].value = scoreboard.berries_eaten_by_mongoose.to_string();
 }
 
 fn main() {
@@ -457,7 +469,7 @@ fn main() {
             }),
             ..default()
         }))
-        .insert_resource(Scoreboard { score: 0 })
+        .insert_resource(Scoreboard { ..default() })
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(BerrySpawnTimer(Timer::from_seconds(
             3.0,
