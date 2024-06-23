@@ -309,9 +309,13 @@ fn move_snakes(
     for (snake, segments_entities, mut timer) in &mut snakes_query {
         if timer.0.tick(time.delta()).just_finished() {
             if let Some(mut next_direction) = snake.next {
+                let mut head = true;
                 for segment_entry in segments_entities {
                     let (mut segment_position, mut segment) =
                         positions_query.get_mut(*segment_entry).unwrap();
+                    if head {
+                        segment.to = next_direction;
+                    }
                     segment_position.x += match segment.to {
                         LEFT => -1,
                         RIGHT => 1,
@@ -325,6 +329,7 @@ fn move_snakes(
                     // Create new bindings
                     let (next, to) = (next_direction, segment.to);
                     (segment.to, segment.from, next_direction) = (next, to, to);
+                    head = false;
                 }
             }
         }
