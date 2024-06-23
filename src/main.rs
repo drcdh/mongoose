@@ -13,29 +13,32 @@ const MONGOOSE_Z: i32 = 10;
 const SCOREBOARD_FONT_SIZE: f32 = 40.0;
 const SCOREBOARD_TEXT_PADDING: Val = Val::Px(5.0);
 
-const MONGOOSE_SIZE: Vec2 = Vec2::new(20.0, 20.0);
-
 const BERRY_DIAMETER: f32 = 15.0;
 
 const BACKGROUND_COLOR: Color = Color::rgb(0.6, 0.9, 0.2);
-const MONGOOSE_COLOR: Color = Color::rgb(0.8, 0.6, 0.0);
 const BERRY_COLOR: Color = Color::rgb(1.0, 0.5, 0.5);
 const TEXT_COLOR: Color = Color::rgb(0.5, 0.5, 1.0);
 const SCORE_COLOR: Color = Color::rgb(1.0, 0.5, 0.5);
 
+const SPRITE_SHEET_COLUMNS: usize = 12;
+const SPRITE_SHEET_ROWS: usize = 3;
+
 const HEAD: usize = 0;
-const BODY: usize = 8;
-const TAIL: usize = 16;
+const BODY: usize = 1 * SPRITE_SHEET_COLUMNS;
+const TAIL: usize = 2 * SPRITE_SHEET_COLUMNS;
 
 const LEFT: usize = 0;
 const UP: usize = 1;
 const RIGHT: usize = 2;
 const DOWN: usize = 3;
-// Cartesian quadrants
-const TURN3: usize = 4; //  down->right |  left->   up
-const TURN2: usize = 5; //  left-> down |    up->right
-const TURN1: usize = 6; //    up-> left | right-> down
-const TURN4: usize = 7; // right->   up |  down-> left
+const CW_LEFT: usize = 4;
+const CW_UP: usize = 5;
+const CW_RIGHT: usize = 6;
+const CW_DOWN: usize = 7;
+const CCW_LEFT: usize = 8;
+const CCW_UP: usize = 9;
+const CCW_RIGHT: usize = 10;
+const CCW_DOWN: usize = 11;
 
 const SNAKE_MOVEMENT_PERIOD: f32 = 0.5; // How often snakes move
 const SNAKE_PLANNING_PERIOD: f32 = 3.0; // How often snakes replan their goal position
@@ -57,6 +60,16 @@ struct MongooseHead;
 
 #[derive(Component)]
 struct MongooseBody;
+
+#[derive(Component)]
+struct MongooseSegment {
+    from: usize,
+    to: usize,
+    type_offset: usize, // HEAD, BODY, or TAIL
+}
+
+#[derive(Component)]
+struct Mongoose;
 
 #[derive(Component)]
 struct SnakeHead;
@@ -108,23 +121,79 @@ struct BerrySpawnTimer(Timer);
 #[derive(Resource)]
 struct SnakeSpawnTimer(Timer);
 
-fn spawn_mongoose(commands: &mut Commands) {
-    let (x, y) = (ARENA_WIDTH / 2, ARENA_HEIGHT / 2);
-    commands.spawn((
-        SpriteBundle {
-            transform: Transform {
-                scale: MONGOOSE_SIZE.extend(1.0),
-                ..default()
-            },
-            sprite: Sprite {
-                color: MONGOOSE_COLOR,
-                ..default()
-            },
-            ..default()
-        },
-        MongooseHead,
-        Position { x, y },
+fn spawn_mongoose(
+    commands: &mut Commands,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+) {
+    let texture = asset_server.load("mongoose.png");
+    let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
+        Vec2::splat(40.0),
+        SPRITE_SHEET_COLUMNS,
+        SPRITE_SHEET_ROWS,
+        None,
+        None,
     ));
+    let (x, y) = (ARENA_WIDTH / 2, ARENA_HEIGHT / 2);
+    let mongoose = commands.spawn((SpriteBundle::default(), Mongoose)).id();
+    let head = commands
+        .spawn((
+            SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            },
+            TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                ..default()
+            },
+            MongooseHead,
+            MongooseSegment {
+                to: UP,
+                from: LEFT,
+                type_offset: HEAD,
+            },
+            Position { x, y },
+        ))
+        .id();
+    commands.entity(mongoose).add_child(head);
+    let body = commands
+        .spawn((
+            SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            },
+            TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                index: BODY + CCW_LEFT,
+            },
+            MongooseSegment {
+                to: LEFT,
+                from: UP,
+                type_offset: BODY,
+            },
+            Position { x: x + 1, y },
+        ))
+        .id();
+    commands.entity(mongoose).add_child(body);
+    let tail = commands
+        .spawn((
+            SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            },
+            TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                index: TAIL + UP,
+            },
+            MongooseSegment {
+                to: UP,
+                from: UP,
+                type_offset: TAIL,
+            },
+            Position { x: x + 1, y: y - 1 },
+        ))
+        .id();
+    commands.entity(mongoose).add_child(tail);
 }
 
 fn spawn_scoreboard(commands: &mut Commands) {
@@ -190,8 +259,8 @@ fn spawn_snake(
     let texture = asset_server.load("snake.png");
     let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
         Vec2::splat(40.0),
-        8,
-        3,
+        SPRITE_SHEET_COLUMNS,
+        SPRITE_SHEET_ROWS,
         None,
         None,
     ));
@@ -287,49 +356,95 @@ fn setup(
 ) {
     commands.spawn(Camera2dBundle::default());
 
-    spawn_mongoose(&mut commands);
+    spawn_mongoose(&mut commands, asset_server, texture_atlas_layouts);
     spawn_scoreboard(&mut commands);
 }
 
 fn mongoose_control(
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut position_query: Query<&mut Position, With<MongooseHead>>,
+    mut mongoose_query: Query<(&Mongoose, &Children)>,
+    mut positions_query: Query<(&mut Position, &mut MongooseSegment)>,
     mut input_timer: ResMut<InputTimer>,
     time: Res<Time>,
 ) {
-    if input_timer.0.tick(time.delta()).finished() {
-        let mut position = position_query.single_mut();
-
-        let mut delta_x = 0;
-        let mut delta_y = 0;
-        let mut moved = false;
-
-        if position.x > 0 && keyboard_input.pressed(KeyCode::ArrowLeft) {
-            delta_x -= 1;
-            moved = true;
-        }
-        if position.x < ARENA_WIDTH - 1 && keyboard_input.pressed(KeyCode::ArrowRight) {
-            delta_x += 1;
-            moved = true;
-        }
-        if position.y < ARENA_HEIGHT - 1 && keyboard_input.pressed(KeyCode::ArrowUp) {
-            delta_y += 1;
-            moved = true;
-        }
-        if position.y > 0 && keyboard_input.pressed(KeyCode::ArrowDown) {
-            delta_y -= 1;
-            moved = true;
-        }
-        if delta_x != 0 && delta_y != 0 {
-            // No moving diagonally
-            return;
-        }
-        position.x += delta_x;
-        position.y += delta_y;
-        if moved {
-            input_timer.0.reset();
-        }
+    if !input_timer.0.tick(time.delta()).finished() {
+        return;
     }
+    let (_, segments_entities) = mongoose_query.get_single_mut().unwrap();
+
+    let mut delta_x = 0;
+    let mut delta_y = 0;
+    if keyboard_input.pressed(KeyCode::ArrowLeft) {
+        delta_x -= 1;
+    }
+    if keyboard_input.pressed(KeyCode::ArrowRight) {
+        delta_x += 1;
+    }
+    if keyboard_input.pressed(KeyCode::ArrowUp) {
+        delta_y += 1;
+    }
+    if keyboard_input.pressed(KeyCode::ArrowDown) {
+        delta_y -= 1;
+    }
+
+    if delta_x != 0 && delta_y != 0 {
+        // No moving diagonally
+        return;
+    }
+    if delta_x == 0 && delta_y == 0 {
+        return;
+    }
+
+    let mut next_direction = if delta_x < 0 {
+        LEFT
+    } else if delta_y > 0 {
+        UP
+    } else if delta_x > 0 {
+        RIGHT
+    } else if delta_y < 0 {
+        DOWN
+    } else {
+        0 // error
+    };
+
+    // TODO repeated code in snake_moving
+    let mut head = true;
+    for segment_entry in segments_entities {
+        let (mut segment_position, mut segment) = positions_query.get_mut(*segment_entry).unwrap();
+        if head {
+            // Abort if we're at the edge of the area
+            if segment_position.x <= 0 && next_direction == LEFT {
+                return;
+            }
+            if segment_position.y >= ARENA_HEIGHT && next_direction == UP {
+                return;
+            }
+            if segment_position.x >= ARENA_WIDTH && next_direction == RIGHT {
+                return;
+            }
+            if segment_position.y <= 0 && next_direction == DOWN {
+                return;
+            }
+            segment.to = next_direction;
+        }
+        segment_position.x += match segment.to {
+            LEFT => -1,
+            RIGHT => 1,
+            _ => 0,
+        };
+        segment_position.y += match segment.to {
+            UP => 1,
+            DOWN => -1,
+            _ => 0,
+        };
+        // Create new bindings
+        let (next, to) = (next_direction, segment.to);
+        (segment.to, segment.from, next_direction) = (next, to, to);
+        head = false;
+    }
+    // TODO (see above)
+
+    input_timer.0.reset();
 }
 
 fn snake_moving(
@@ -428,7 +543,7 @@ fn transformation(window: Query<&Window>, mut q: Query<(&Position, &mut Transfor
     }
 }
 
-fn set_sprites(mut texture_atlas_query: Query<(&mut TextureAtlas, &SnakeSegment)>) {
+fn set_mongoose_sprites(mut texture_atlas_query: Query<(&mut TextureAtlas, &MongooseSegment)>) {
     for (mut ta, segment) in &mut texture_atlas_query {
         ta.index = segment.type_offset;
         ta.index += match segment.type_offset {
@@ -440,14 +555,56 @@ fn set_sprites(mut texture_atlas_query: Query<(&mut TextureAtlas, &SnakeSegment)
                 _ => 0, // FIXME should cause error
             },
             BODY => match (segment.from, segment.to) {
-                (RIGHT, DOWN) | (UP, LEFT) => TURN1,
-                (LEFT, DOWN) | (UP, RIGHT) => TURN2,
-                (DOWN, RIGHT) | (LEFT, UP) => TURN3,
-                (RIGHT, UP) | (DOWN, LEFT) => TURN4,
-                (RIGHT, RIGHT) => RIGHT,
-                (UP, UP) => UP,
                 (LEFT, LEFT) => LEFT,
+                (UP, UP) => UP,
+                (RIGHT, RIGHT) => RIGHT,
                 (DOWN, DOWN) => DOWN,
+                (DOWN, LEFT) => CW_LEFT,
+                (LEFT, UP) => CW_UP,
+                (UP, RIGHT) => CW_RIGHT,
+                (RIGHT, DOWN) => CW_DOWN,
+                (UP, LEFT) => CCW_LEFT,
+                (RIGHT, UP) => CCW_UP,
+                (DOWN, RIGHT) => CCW_RIGHT,
+                (LEFT, DOWN) => CCW_DOWN,
+                _ => 0, // FIXME should cause error
+            },
+            TAIL => match segment.to {
+                LEFT => 0,
+                UP => 1,
+                RIGHT => 2,
+                DOWN => 3,
+                _ => 0, // FIXME should cause error
+            },
+            _ => 0, // FIXME should cause error
+        }
+    }
+}
+
+fn set_snake_sprites(mut texture_atlas_query: Query<(&mut TextureAtlas, &SnakeSegment)>) {
+    for (mut ta, segment) in &mut texture_atlas_query {
+        ta.index = segment.type_offset;
+        ta.index += match segment.type_offset {
+            HEAD => match segment.from {
+                LEFT => 0,
+                UP => 1,
+                RIGHT => 2,
+                DOWN => 3,
+                _ => 0, // FIXME should cause error
+            },
+            BODY => match (segment.from, segment.to) {
+                (LEFT, LEFT) => LEFT,
+                (UP, UP) => UP,
+                (RIGHT, RIGHT) => RIGHT,
+                (DOWN, DOWN) => DOWN,
+                (DOWN, LEFT) => CW_LEFT,
+                (LEFT, UP) => CW_UP,
+                (UP, RIGHT) => CW_RIGHT,
+                (RIGHT, DOWN) => CW_DOWN,
+                (UP, LEFT) => CCW_LEFT,
+                (RIGHT, UP) => CCW_UP,
+                (DOWN, RIGHT) => CCW_RIGHT,
+                (LEFT, DOWN) => CCW_DOWN,
                 _ => 0, // FIXME should cause error
             },
             TAIL => match segment.to {
@@ -524,7 +681,8 @@ fn main() {
                 snake_planning,
                 spawn_berry,
                 transformation,
-                set_sprites,
+                set_mongoose_sprites,
+                set_snake_sprites,
                 eat_berries,
             )
                 .chain(),
