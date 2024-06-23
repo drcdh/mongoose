@@ -105,8 +105,11 @@ struct InputTimer(Timer);
 #[derive(Resource)]
 struct BerrySpawnTimer(Timer);
 
+#[derive(Resource)]
+struct SnakeSpawnTimer(Timer);
+
 fn spawn_mongoose(commands: &mut Commands) {
-    let (x, y) = (0, 0);
+    let (x, y) = (ARENA_WIDTH / 2, ARENA_HEIGHT / 2);
     commands.spawn((
         SpriteBundle {
             transform: Transform {
@@ -178,7 +181,12 @@ fn spawn_snake(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+    mut timer: ResMut<SnakeSpawnTimer>,
+    time: Res<Time>,
 ) {
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
     let texture = asset_server.load("snake.png");
     let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
         Vec2::splat(40.0),
@@ -187,15 +195,21 @@ fn spawn_snake(
         None,
         None,
     ));
-    let x = 5;
-    let y = 5;
+    let mut rng = thread_rng();
+    let p = rng.gen_range(-2..ARENA_HEIGHT + 2);
+    let side = rng.gen_range(0..4);
+    let (x, y) = match side {
+        LEFT => (-3, p),
+        UP => (p, 23),
+        RIGHT => (23, p),
+        DOWN => (p, -3),
+        _ => (0, 0), // error
+    };
     let snake = commands
         .spawn((
             SpriteBundle::default(),
             Snake { next: None },
-            Plan {
-                target: Some(Target::Position(Position { x: 4, y: 6 })),
-            },
+            Plan { target: None },
             MovementTimer(Timer::from_seconds(
                 SNAKE_MOVEMENT_PERIOD,
                 TimerMode::Repeating,
@@ -275,7 +289,6 @@ fn setup(
 
     spawn_mongoose(&mut commands);
     spawn_scoreboard(&mut commands);
-    spawn_snake(commands, asset_server, texture_atlas_layouts);
 }
 
 fn mongoose_control(
@@ -495,6 +508,10 @@ fn main() {
             3.0,
             TimerMode::Repeating,
         )))
+        .insert_resource(SnakeSpawnTimer(Timer::from_seconds(
+            5.0,
+            TimerMode::Repeating,
+        )))
         .add_systems(Startup, setup)
         // Add our gameplay simulation systems to the fixed timestep schedule
         // which runs at 64 Hz by default
@@ -502,6 +519,7 @@ fn main() {
             FixedUpdate,
             (
                 mongoose_control,
+                spawn_snake,
                 snake_moving,
                 snake_planning,
                 spawn_berry,
