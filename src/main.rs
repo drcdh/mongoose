@@ -291,21 +291,25 @@ fn mongoose_control(
         let mut delta_y = 0;
         let mut moved = false;
 
-        if keyboard_input.pressed(KeyCode::ArrowLeft) {
+        if position.x > 0 && keyboard_input.pressed(KeyCode::ArrowLeft) {
             delta_x -= 1;
             moved = true;
         }
-        if keyboard_input.pressed(KeyCode::ArrowRight) {
+        if position.x < ARENA_WIDTH - 1 && keyboard_input.pressed(KeyCode::ArrowRight) {
             delta_x += 1;
             moved = true;
         }
-        if keyboard_input.pressed(KeyCode::ArrowUp) {
+        if position.y < ARENA_HEIGHT - 1 && keyboard_input.pressed(KeyCode::ArrowUp) {
             delta_y += 1;
             moved = true;
         }
-        if keyboard_input.pressed(KeyCode::ArrowDown) {
+        if position.y > 0 && keyboard_input.pressed(KeyCode::ArrowDown) {
             delta_y -= 1;
             moved = true;
+        }
+        if delta_x != 0 && delta_y != 0 {
+            // No moving diagonally
+            return;
         }
         position.x += delta_x;
         position.y += delta_y;
@@ -389,6 +393,9 @@ fn snake_planning(
                 snake.next = None;
                 plan.target = None;
             }
+        } else {
+            snake.next = None;
+            plan.target = None;
         }
     }
 }
