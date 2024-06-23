@@ -100,7 +100,12 @@ fn spawn_scoreboard(commands: &mut Commands) {
                     ..default()
                 }
             ),
-        ]),
+        ]).with_style(Style {
+            position_type: PositionType::Absolute,
+            top: SCOREBOARD_TEXT_PADDING,
+            left: SCOREBOARD_TEXT_PADDING,
+            ..default()
+        }),
     ));
 }
 
