@@ -100,6 +100,9 @@ struct Scoreboard {
 struct ScoreboardUI;
 
 #[derive(Resource)]
+struct InputTimer(Timer);
+
+#[derive(Resource)]
 struct BerrySpawnTimer(Timer);
 
 fn spawn_mongoose(commands: &mut Commands) {
@@ -118,7 +121,6 @@ fn spawn_mongoose(commands: &mut Commands) {
         },
         MongooseHead,
         Position { x, y },
-        MovementTimer(Timer::from_seconds(0.2, TimerMode::Repeating)),
     ));
 }
 
@@ -279,30 +281,37 @@ fn setup(
 fn mongoose_control(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut position_query: Query<&mut Position, With<MongooseHead>>,
-    mut timer: Query<&mut MovementTimer, With<MongooseHead>>,
+    mut input_timer: ResMut<InputTimer>,
     time: Res<Time>,
 ) {
-    let mut timer = timer.get_single_mut().unwrap();
-    if timer.0.tick(time.delta()).just_finished() {
+    if input_timer.0.tick(time.delta()).finished() {
         let mut position = position_query.single_mut();
 
         let mut delta_x = 0;
         let mut delta_y = 0;
+        let mut moved = false;
 
         if keyboard_input.pressed(KeyCode::ArrowLeft) {
             delta_x -= 1;
+            moved = true;
         }
         if keyboard_input.pressed(KeyCode::ArrowRight) {
             delta_x += 1;
+            moved = true;
         }
         if keyboard_input.pressed(KeyCode::ArrowUp) {
             delta_y += 1;
+            moved = true;
         }
         if keyboard_input.pressed(KeyCode::ArrowDown) {
             delta_y -= 1;
+            moved = true;
         }
         position.x += delta_x;
         position.y += delta_y;
+        if moved {
+            input_timer.0.reset();
+        }
     }
 }
 
@@ -471,6 +480,7 @@ fn main() {
         }))
         .insert_resource(Scoreboard { ..default() })
         .insert_resource(ClearColor(BACKGROUND_COLOR))
+        .insert_resource(InputTimer(Timer::from_seconds(0.2, TimerMode::Once)))
         .insert_resource(BerrySpawnTimer(Timer::from_seconds(
             3.0,
             TimerMode::Repeating,
