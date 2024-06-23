@@ -40,6 +40,8 @@ const TURN2: usize = 5;  //  left-> down |    up->right
 const TURN1: usize = 6;  //    up-> left | right-> down
 const TURN4: usize = 7;  // right->   up |  down-> left
 
+const SNAKE_MOVEMENT_PERIOD: f32 = 0.5;  // How often snakes move
+const SNAKE_PLANNING_PERIOD: f32 = 3.0;  // How often snakes replan their goal position
 
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 struct Position {
@@ -49,6 +51,9 @@ struct Position {
 
 #[derive(Component)]
 struct MovementTimer(Timer);
+
+#[derive(Component)]
+struct PlanningTimer(Timer);
 
 #[derive(Component)]
 struct MongooseHead;
@@ -67,15 +72,23 @@ struct SnakeSegment {
 }
 
 #[derive(Component)]
-struct Snake;
+struct Snake {
+    next: Option<usize>,  // LEFT, UP, RIGHT, or DOWN
+}
+
+enum Target {
+    Position(Position),
+    Entity(Entity),
+}
+
+#[derive(Component)]
+struct Plan {
+    target: Option<Target>,
+}
 
 #[derive(Component)]
 struct Berry;
 
-#[derive(Component, Deref, DerefMut)]
-struct Velocity(Vec2);
-
-// This resource tracks the game's score
 #[derive(Resource)]
 struct Scoreboard { score: usize }
 
@@ -173,8 +186,10 @@ fn spawn_snake(
     let y = 5;
     let snake = commands.spawn((
         SpriteBundle::default(),
-        Snake,
-        MovementTimer(Timer::from_seconds(1.0, TimerMode::Repeating)),
+        Snake { next: None },
+        Plan { target: Some(Target::Position(Position { x: 4, y: 6 })) },
+        MovementTimer(Timer::from_seconds(SNAKE_MOVEMENT_PERIOD, TimerMode::Repeating)),
+        PlanningTimer(Timer::from_seconds(SNAKE_PLANNING_PERIOD, TimerMode::Repeating)),
     )).id();
     let head = commands.spawn((
         SpriteBundle {
@@ -261,35 +276,74 @@ fn mongoose_control(
 }
 
 fn move_snakes(
-    mut snakes_query: Query<(Entity, &Children, &mut MovementTimer), With<Snake>>,
+    mut snakes_query: Query<(&Snake, &Children, &mut MovementTimer)>,
     mut positions_query: Query<(&mut Position, &mut SnakeSegment)>,
     time: Res<Time>,
 ) {
-    for (_, segments_entities, mut timer) in &mut snakes_query {
+    for (snake, segments_entities, mut timer) in &mut snakes_query {
         if timer.0.tick(time.delta()).just_finished() {
-            let mut next_direction = UP;  // This value should come from the Snake "AI"
-            for segment_entry in segments_entities {
-                let (mut segment_position, mut segment) = positions_query.get_mut(*segment_entry).unwrap();
-//                bevy::log::info!("Snake {:?} segment {:?} at ({}, {}) was moving {} and is going {}", entity, segment_entry, segment_position.x, segment_position.y, segment.from, segment.to);
-                segment_position.x += match segment.to {
-                    LEFT => -1,
-                    RIGHT => 1,
-                    _ => 0,
-                };
-                segment_position.y += match segment.to {
-                    UP => 1,
-                    DOWN => -1,
-                    _ => 0,
-                };
-                // Create new bindings
-                let (next, to) = (next_direction, segment.to);
-                (segment.to, segment.from, next_direction) = (next, to, to);
-//                bevy::log::info!("Snake {:?} segment {:?} at ({}, {}) was moving {} and is going {}", entity, segment_entry, segment_position.x, segment_position.y, segment.from, segment.to);
+            if let Some(mut next_direction) = snake.next {
+                for segment_entry in segments_entities {
+                    let (mut segment_position, mut segment) = positions_query.get_mut(*segment_entry).unwrap();
+                    segment_position.x += match segment.to {
+                        LEFT => -1,
+                        RIGHT => 1,
+                        _ => 0,
+                    };
+                    segment_position.y += match segment.to {
+                        UP => 1,
+                        DOWN => -1,
+                        _ => 0,
+                    };
+                    // Create new bindings
+                    let (next, to) = (next_direction, segment.to);
+                    (segment.to, segment.from, next_direction) = (next, to, to);
+                }
             }
         }
     }
 }
 
+fn snake_planning(
+    positions: Query<&Position>,
+    berries: Query<Entity, With<Berry>>,
+    mut snakes: Query<(&mut Snake, &Children, &mut Plan, &mut PlanningTimer)>,
+    head_positions: Query<&Position, With<SnakeHead>>,
+    time: Res<Time>,
+) {
+    for (mut snake, children, mut plan, mut timer) in &mut snakes {
+        if timer.0.tick(time.delta()).just_finished() {
+            // TODO just take the first berry for now
+            if let Some(berry) = berries.iter().next() {
+                plan.target = Some(Target::Entity(berry));
+            }
+        }
+        if let Some(goal) = match &plan.target {
+            Some(Target::Entity(entity)) => Some(positions.get(*entity).unwrap()),
+            Some(Target::Position(position)) => Some(position),
+            None => None,
+        } {
+            // pathfinding o_o
+            let head_position = head_positions.get(*children.get(0).unwrap()).unwrap();
+            let delta_x = goal.x - head_position.x;
+            let delta_y = goal.y - head_position.y;
+            if delta_x < 0 {
+                snake.next = Some(LEFT);
+            } else if delta_x > 0 {
+                snake.next = Some(RIGHT);
+            } else if delta_y < 0 {
+                snake.next = Some(DOWN);
+            } else if delta_y > 0 {
+                snake.next = Some(UP);
+            } else {
+                // Wherever you go, there you are
+                snake.next = None;
+                plan.target = None;
+            }
+        }
+
+    }
+}
 fn transformation(window: Query<&Window>, mut q: Query<(&Position, &mut Transform)>) {
     fn convert(pos: f32, bound_window: f32, bound_game: f32) -> f32 {
         let tile_size = bound_window / bound_game;
@@ -381,6 +435,7 @@ fn main() {
             FixedUpdate,
             (
                 mongoose_control,
+                snake_planning,
                 move_snakes,
                 spawn_berry,
                 transformation,
