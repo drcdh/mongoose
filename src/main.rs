@@ -1,11 +1,6 @@
 use rand::{thread_rng, Rng};
 
 use bevy::{
-    math::bounding::{
-        Aabb2d,
-        BoundingCircle,
-        IntersectsVolume,
-    },
     prelude::*,
     window::WindowResolution,
 };
@@ -13,6 +8,11 @@ use bevy::{
 const ARENA_HEIGHT: i32 = 20;
 const ARENA_WIDTH: i32 = 20;
 
+/* TODO
+const BERRY_Z: i32 = 1;
+const SNAKE_Z: i32 = 5;
+const MONGOOSE_Z: i32 = 10;
+ */
 const SCOREBOARD_FONT_SIZE: f32 = 40.0;
 const SCOREBOARD_TEXT_PADDING: Val = Val::Px(5.0);
 
@@ -75,12 +75,6 @@ struct Berry;
 #[derive(Component, Deref, DerefMut)]
 struct Velocity(Vec2);
 
-#[derive(Component)]
-struct Collider;
-
-#[derive(Event, Default)]
-struct CollisionEvent;
-
 // This resource tracks the game's score
 #[derive(Resource)]
 struct Scoreboard { score: usize }
@@ -106,7 +100,6 @@ fn spawn_mongoose(commands: &mut Commands) {
             ..default()
         },
         MongooseHead,
-        Collider,
         Position { x, y },
         MovementTimer(Timer::from_seconds(0.2, TimerMode::Repeating)),
     ));
@@ -162,7 +155,6 @@ fn spawn_berry(
                 ..default()
             },
             Berry,
-            Collider,
             Position { x, y }
         ));
     }
@@ -195,7 +187,6 @@ fn spawn_snake(
         },
         SnakeHead,
         SnakeSegment { to: UP, from: LEFT, type_offset: HEAD},
-        Collider,
         Position { x, y },
     )).id();
     commands.entity(snake).add_child(head);
@@ -209,7 +200,6 @@ fn spawn_snake(
             ..default()
         },
         SnakeSegment { to: LEFT, from: UP, type_offset: BODY },
-        Collider,
         Position { x: x+1, y },
     )).id();
     commands.entity(snake).add_child(body);
@@ -223,7 +213,6 @@ fn spawn_snake(
             index: TAIL+UP,
         },
         SnakeSegment { to: UP, from: UP, type_offset: TAIL },
-        Collider,
         Position { x: x+1, y: y-1 },
     )).id();
     commands.entity(snake).add_child(tail);
@@ -276,12 +265,12 @@ fn move_snakes(
     mut positions_query: Query<(&mut Position, &mut SnakeSegment)>,
     time: Res<Time>,
 ) {
-    for (entity, segments_entities, mut timer) in &mut snakes_query {
+    for (_, segments_entities, mut timer) in &mut snakes_query {
         if timer.0.tick(time.delta()).just_finished() {
             let mut next_direction = UP;  // This value should come from the Snake "AI"
             for segment_entry in segments_entities {
                 let (mut segment_position, mut segment) = positions_query.get_mut(*segment_entry).unwrap();
-                bevy::log::info!("Snake {:?} segment {:?} at ({}, {}) was moving {} and is going {}", entity, segment_entry, segment_position.x, segment_position.y, segment.from, segment.to);
+//                bevy::log::info!("Snake {:?} segment {:?} at ({}, {}) was moving {} and is going {}", entity, segment_entry, segment_position.x, segment_position.y, segment.from, segment.to);
                 segment_position.x += match segment.to {
                     LEFT => -1,
                     RIGHT => 1,
@@ -295,7 +284,7 @@ fn move_snakes(
                 // Create new bindings
                 let (next, to) = (next_direction, segment.to);
                 (segment.to, segment.from, next_direction) = (next, to, to);
-                bevy::log::info!("Snake {:?} segment {:?} at ({}, {}) was moving {} and is going {}", entity, segment_entry, segment_position.x, segment_position.y, segment.from, segment.to);
+//                bevy::log::info!("Snake {:?} segment {:?} at ({}, {}) was moving {} and is going {}", entity, segment_entry, segment_position.x, segment_position.y, segment.from, segment.to);
             }
         }
     }
@@ -350,40 +339,19 @@ fn set_sprites(mut texture_atlas_query: Query<(&mut TextureAtlas, &SnakeSegment)
     }
 }
 
-fn berry_collision(
-    berry: BoundingCircle,
-    bounding_box: Aabb2d,
-) -> bool {
-    berry.intersects(&bounding_box)
-}
-
-fn check_for_collisions(
+fn eat_berries(
     mut commands: Commands,
     mut scoreboard: ResMut<Scoreboard>,
-    mut mongoose_query: Query<&Transform, With<MongooseHead>>,
-    collider_query: Query<(Entity, &Transform, Option<&Berry>), With<Collider>>,
-    mut collision_events: EventWriter<CollisionEvent>,
+    mongoose_position: Query<&Position, With<MongooseHead>>,
+    snake_positions: Query<&Position, With<SnakeHead>>,
+    berry_positions: Query<(Entity, &Position), With<Berry>>,
 ) {
-    let mongoose_transform= mongoose_query.single_mut();
+    let mongoose_position = mongoose_position.single();
 
-    for (collider_entity, collider_transform, maybe_berry) in &collider_query {
-        let collision = berry_collision(
-            BoundingCircle::new(mongoose_transform.translation.truncate(), BERRY_DIAMETER/2.0),
-            Aabb2d::new(
-                collider_transform.translation.truncate(),
-                collider_transform.scale.truncate()/2.0,
-            ),
-        );
-
-        if collision {
-            // Sends a collision event so that other systems can react to the collision
-            collision_events.send_default();
-
-            // Berries should be despawned and increment the scoreboard on collision
-            if maybe_berry.is_some() {
-                commands.entity(collider_entity).despawn();
-                scoreboard.score += 1;
-            }
+    for (berry, berry_position) in &berry_positions {
+        if mongoose_position == berry_position {
+            commands.entity(berry).despawn();
+            scoreboard.score += 1;
         }
     }
 }
@@ -406,7 +374,6 @@ fn main() {
         .insert_resource(Scoreboard { score: 0 })
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(BerrySpawnTimer(Timer::from_seconds(3.0, TimerMode::Repeating)))
-        .add_event::<CollisionEvent>()
         .add_systems(Startup, setup)
         // Add our gameplay simulation systems to the fixed timestep schedule
         // which runs at 64 Hz by default
@@ -418,7 +385,7 @@ fn main() {
                 spawn_berry,
                 transformation,
                 set_sprites,
-                check_for_collisions,
+                eat_berries,
             ).chain(),
         )
         .add_systems(
