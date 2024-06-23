@@ -315,7 +315,7 @@ fn mongoose_control(
     }
 }
 
-fn move_snakes(
+fn snake_moving(
     mut snakes_query: Query<(&Snake, &Children, &mut MovementTimer)>,
     mut positions_query: Query<(&mut Position, &mut SnakeSegment)>,
     time: Res<Time>,
@@ -365,7 +365,10 @@ fn snake_planning(
             }
         }
         if let Some(goal) = match &plan.target {
-            Some(Target::Entity(entity)) => Some(positions.get(*entity).unwrap()),
+            Some(Target::Entity(entity)) => match positions.get(*entity) {
+                Ok(position) => Some(position),
+                Err(_) => None,
+            },
             Some(Target::Position(position)) => Some(position),
             None => None,
         } {
@@ -492,8 +495,8 @@ fn main() {
             FixedUpdate,
             (
                 mongoose_control,
+                snake_moving,
                 snake_planning,
-                move_snakes,
                 spawn_berry,
                 transformation,
                 set_sprites,
