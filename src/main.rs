@@ -26,6 +26,21 @@ const BERRY_COLOR: Color = Color::rgb(1.0, 0.5, 0.5);
 const TEXT_COLOR: Color = Color::rgb(0.5, 0.5, 1.0);
 const SCORE_COLOR: Color = Color::rgb(1.0, 0.5, 0.5);
 
+const HEAD: usize = 0;
+const BODY: usize = 8;
+const TAIL: usize = 16;
+
+const LEFT: usize = 0;
+const UP: usize = 1;
+const RIGHT: usize = 2;
+const DOWN: usize = 3;
+// Cartesian quadrants
+const TURN3: usize = 4;  //  down->right |  left->   up
+const TURN2: usize = 5;  //  left-> down |    up->right
+const TURN1: usize = 6;  //    up-> left | right-> down
+const TURN4: usize = 7;  // right->   up |  down-> left
+
+
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 struct Position {
     x: i32,
@@ -45,7 +60,11 @@ struct MongooseBody;
 struct SnakeHead;
 
 #[derive(Component)]
-struct SnakeSegment;
+struct SnakeSegment {
+    from: usize,
+    to: usize,
+    type_offset: usize,  // HEAD, BODY, or TAIL
+}
 
 #[derive(Component)]
 struct Snake;
@@ -156,7 +175,7 @@ fn spawn_snake(
 ) {
     let texture = asset_server.load("snake.png");
     let texture_atlas_layout = texture_atlas_layouts.add(
-        TextureAtlasLayout::from_grid(Vec2::splat(40.0), 3, 1, None, None)
+        TextureAtlasLayout::from_grid(Vec2::splat(40.0), 8, 3, None, None)
     );
     let x = 5;
     let y = 5;
@@ -172,10 +191,10 @@ fn spawn_snake(
         },
         TextureAtlas {
             layout: texture_atlas_layout.clone(),
-            index: 0,
+            ..default()
         },
         SnakeHead,
-        SnakeSegment,
+        SnakeSegment { to: UP, from: LEFT, type_offset: HEAD},
         Collider,
         Position { x, y },
     )).id();
@@ -187,9 +206,9 @@ fn spawn_snake(
         },
         TextureAtlas {
             layout: texture_atlas_layout.clone(),
-            index: 1,
+            ..default()
         },
-        SnakeSegment,
+        SnakeSegment { to: LEFT, from: UP, type_offset: BODY },
         Collider,
         Position { x: x+1, y },
     )).id();
@@ -201,11 +220,11 @@ fn spawn_snake(
         },
         TextureAtlas {
             layout: texture_atlas_layout.clone(),
-            index: 2,
+            index: TAIL+UP,
         },
-        SnakeSegment,
+        SnakeSegment { to: UP, from: UP, type_offset: TAIL },
         Collider,
-        Position { x: x+2, y },
+        Position { x: x+1, y: y-1 },
     )).id();
     commands.entity(snake).add_child(tail);
 }
@@ -254,22 +273,29 @@ fn mongoose_control(
 
 fn move_snakes(
     mut snakes_query: Query<(Entity, &Children, &mut MovementTimer), With<Snake>>,
-    mut positions_query: Query<&mut Position, With<SnakeSegment>>,
+    mut positions_query: Query<(&mut Position, &mut SnakeSegment)>,
     time: Res<Time>,
 ) {
-    for (_, segments_entities, mut timer) in &mut snakes_query {
+    for (entity, segments_entities, mut timer) in &mut snakes_query {
         if timer.0.tick(time.delta()).just_finished() {
-            let delta_x = -1; // FIXME
-            let delta_y = 0;
-            let head = segments_entities.get(0).unwrap();
-            let mut head_position = positions_query.get_mut(*head).unwrap();
-            head_position.x += delta_x;
-            head_position.y += delta_y;
-            // Check for turns and swap deltas as needed
-            for segment in segments_entities.get(1..).unwrap().iter() {
-                let mut segment_position = positions_query.get_mut(*segment).unwrap();
-                segment_position.x += delta_x;
-                segment_position.y += delta_y;
+            let mut next_direction = UP;  // This value should come from the Snake "AI"
+            for segment_entry in segments_entities {
+                let (mut segment_position, mut segment) = positions_query.get_mut(*segment_entry).unwrap();
+                bevy::log::info!("Snake {:?} segment {:?} at ({}, {}) was moving {} and is going {}", entity, segment_entry, segment_position.x, segment_position.y, segment.from, segment.to);
+                segment_position.x += match segment.to {
+                    LEFT => -1,
+                    RIGHT => 1,
+                    _ => 0,
+                };
+                segment_position.y += match segment.to {
+                    UP => 1,
+                    DOWN => -1,
+                    _ => 0,
+                };
+                // Create new bindings
+                let (next, to) = (next_direction, segment.to);
+                (segment.to, segment.from, next_direction) = (next, to, to);
+                bevy::log::info!("Snake {:?} segment {:?} at ({}, {}) was moving {} and is going {}", entity, segment_entry, segment_position.x, segment_position.y, segment.from, segment.to);
             }
         }
     }
@@ -287,6 +313,40 @@ fn transformation(window: Query<&Window>, mut q: Query<(&Position, &mut Transfor
             convert(pos.y as f32, window.height() as f32, ARENA_HEIGHT as f32),
             0.0,
         );
+    }
+}
+
+fn set_sprites(mut texture_atlas_query: Query<(&mut TextureAtlas, &SnakeSegment)>) {
+    for (mut ta, segment) in &mut texture_atlas_query {
+        ta.index = segment.type_offset;
+        ta.index += match segment.type_offset {
+            HEAD => match segment.from {
+                LEFT => 0,
+                UP => 1,
+                RIGHT => 2,
+                DOWN => 3,
+                _ => 0, // FIXME should cause error
+            },
+            BODY => match (segment.from, segment.to) {
+                (RIGHT, DOWN) | (UP, LEFT) => TURN1,
+                (LEFT, DOWN) | (UP, RIGHT) => TURN2,
+                (DOWN, RIGHT) | (LEFT, UP) => TURN3,
+                (RIGHT, UP) | (DOWN, LEFT) => TURN4,
+                (RIGHT, RIGHT) => RIGHT,
+                (UP, UP) => UP,
+                (LEFT, LEFT) => LEFT,
+                (DOWN, DOWN) => DOWN,
+                _ => 0, // FIXME should cause error
+            }
+            TAIL => match segment.to {
+                LEFT => 0,
+                UP => 1,
+                RIGHT => 2,
+                DOWN => 3,
+                _ => 0, // FIXME should cause error
+            },
+            _ => 0, // FIXME should cause error
+        }
     }
 }
 
@@ -357,6 +417,7 @@ fn main() {
                 move_snakes,
                 spawn_berry,
                 transformation,
+                set_sprites,
                 check_for_collisions,
             ).chain(),
         )
