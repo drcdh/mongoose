@@ -50,26 +50,27 @@ struct Position {
     y: i32,
 }
 
-#[derive(Resource, Default)]
-struct Mongoose {
+#[derive(Component)]
+struct Segmented {
     head_position: Position,
     segments: Vec<Entity>,
 }
 
-#[derive(Default)]
-struct Snake {
-    head_position: Position,
-    segments: Vec<Entity>,
+#[derive(Component)]
+struct Mongoose;
+
+#[derive(Component)]
+struct Snake;
+
+#[derive(Component, Default)]
+// imagine some humongous quotation marks here
+struct AI {
     move_timer: Timer,
     plan_timer: Timer,
     next: Option<usize>, // LEFT, UP, RIGHT, or DOWN
     plan: Option<Target>,
 }
 
-#[derive(Resource, Default)]
-struct Snakes {
-    snakes: Vec<Snake>,
-}
 enum Target {
     Position(Position),
     Entity(Entity),
@@ -101,8 +102,7 @@ struct BerrySpawnTimer(Timer);
 struct SnakeSpawnTimer(Timer);
 
 fn spawn_mongoose(
-    commands: &mut Commands,
-    mut mongoose: ResMut<Mongoose>,
+    mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
@@ -115,8 +115,9 @@ fn spawn_mongoose(
         None,
     ));
     let (x, y) = (ARENA_WIDTH / 2, ARENA_HEIGHT / 2);
-    (mongoose.head_position.x, mongoose.head_position.y) = (x, y);
-    mongoose.segments.push(
+    let head_position = Position { x, y };
+    let mut segments: Vec<Entity> = Vec::new();
+    segments.push(
         commands
             .spawn((
                 SpriteBundle {
@@ -131,7 +132,7 @@ fn spawn_mongoose(
             ))
             .id(),
     );
-    mongoose.segments.push(
+    segments.push(
         commands
             .spawn((
                 SpriteBundle {
@@ -146,7 +147,7 @@ fn spawn_mongoose(
             ))
             .id(),
     );
-    mongoose.segments.push(
+    segments.push(
         commands
             .spawn((
                 SpriteBundle {
@@ -161,9 +162,16 @@ fn spawn_mongoose(
             ))
             .id(),
     );
+    commands.spawn((
+        Segmented {
+            head_position,
+            segments,
+        },
+        Mongoose,
+    ));
 }
 
-fn spawn_scoreboard(commands: &mut Commands) {
+fn spawn_scoreboard(mut commands: Commands) {
     commands.spawn((
         ScoreboardUI,
         TextBundle::from_sections([
@@ -215,7 +223,6 @@ fn spawn_berry(mut commands: Commands, time: Res<Time>, mut timer: ResMut<BerryS
 
 fn spawn_snakes(
     mut commands: Commands,
-    mut snakes: ResMut<Snakes>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
     mut timer: ResMut<SnakeSpawnTimer>,
@@ -243,13 +250,8 @@ fn spawn_snakes(
         DOWN => (p, -3),
         _ => (0, 0), // error
     };
-    let mut snake = Snake {
-        head_position: Position { x, y },
-        move_timer: Timer::from_seconds(SNAKE_MOVEMENT_PERIOD, TimerMode::Once),
-        plan_timer: Timer::from_seconds(SNAKE_PLANNING_PERIOD, TimerMode::Once),
-        ..default()
-    };
-    snake.segments.push(
+    let mut segments: Vec<Entity> = Vec::new();
+    segments.push(
         commands
             .spawn((
                 SpriteBundle {
@@ -265,7 +267,7 @@ fn spawn_snakes(
             .id(),
     );
     for _ in 0..n {
-        snake.segments.push(
+        segments.push(
             commands
                 .spawn((
                     SpriteBundle {
@@ -281,7 +283,7 @@ fn spawn_snakes(
                 .id(),
         );
     }
-    snake.segments.push(
+    segments.push(
         commands
             .spawn((
                 SpriteBundle {
@@ -296,25 +298,29 @@ fn spawn_snakes(
             ))
             .id(),
     );
-    snakes.snakes.push(snake);
+
+    commands.spawn((
+        AI {
+            move_timer: Timer::from_seconds(SNAKE_MOVEMENT_PERIOD, TimerMode::Once),
+            plan_timer: Timer::from_seconds(SNAKE_PLANNING_PERIOD, TimerMode::Once),
+            ..default()
+        },
+        Segmented {
+            head_position: Position { x, y },
+            segments,
+        },
+        Snake,
+    ));
 }
 
-fn setup(
-    mut commands: Commands,
-    mongoose: ResMut<Mongoose>,
-    asset_server: Res<AssetServer>,
-    texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
-) {
+fn setup(mut commands: Commands) {
     commands.spawn(Camera2dBundle::default());
-
-    spawn_mongoose(&mut commands, mongoose, asset_server, texture_atlas_layouts);
-    spawn_scoreboard(&mut commands);
 }
 
 fn mongoose_movement(
     mut commands: Commands,
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut mongoose: ResMut<Mongoose>,
+    mut mongoose: Query<&mut Segmented, With<Mongoose>>,
     mut input_timer: ResMut<InputTimer>,
     time: Res<Time>,
     asset_server: Res<AssetServer>,
@@ -360,6 +366,8 @@ fn mongoose_movement(
     } else {
         0 // error
     };
+
+    let mut mongoose = mongoose.get_single_mut().unwrap();
 
     // TODO collision detection with snakes and self
     if mongoose.head_position.x == 0 && next_direction == LEFT {
@@ -411,16 +419,16 @@ fn mongoose_movement(
 
 fn snakes_movement(
     mut commands: Commands,
-    mut snakes: ResMut<Snakes>,
+    mut query: Query<(&mut AI, &mut Segmented), With<Snake>>,
     time: Res<Time>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
-    for snake in &mut snakes.snakes {
-        if !snake.move_timer.tick(time.delta()).finished() {
+    for (mut ai, mut snake) in &mut query {
+        if !ai.move_timer.tick(time.delta()).finished() {
             continue;
         }
-        if let Some(next_direction) = snake.next {
+        if let Some(next_direction) = ai.next {
             let texture = asset_server.load("snake.png");
             let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
                 Vec2::splat(40.0),
@@ -438,6 +446,7 @@ fn snakes_movement(
             } else if next_direction == DOWN {
                 snake.head_position.y -= 1;
             }
+            let new_position = snake.head_position.clone();
             snake.segments.insert(
                 0,
                 commands
@@ -450,33 +459,33 @@ fn snakes_movement(
                             layout: texture_atlas_layout.clone(),
                             ..default()
                         },
-                        snake.head_position.clone(),
+                        new_position,
                     ))
                     .id(),
             );
             // Remove the old tail segment
             commands.entity(snake.segments.pop().unwrap()).despawn();
 
-            snake.move_timer.reset();
+            ai.move_timer.reset();
         }
     }
 }
 
 fn snakes_planning(
     query: Query<(Entity, &Position), With<Berry>>,
-    mut snakes: ResMut<Snakes>,
+    mut snakes: Query<(&mut AI, &Segmented), With<Snake>>,
     time: Res<Time>,
 ) {
-    for snake in &mut snakes.snakes {
-        if !snake.plan_timer.tick(time.delta()).finished() {
+    for (mut ai, snake) in &mut snakes {
+        if !ai.plan_timer.tick(time.delta()).finished() {
             continue;
         }
         // TODO just take the first berry for now
         if let Some((berry, _)) = query.iter().next() {
-            snake.plan = Some(Target::Entity(berry));
+            ai.plan = Some(Target::Entity(berry));
         }
 
-        if let Some(goal) = match &snake.plan {
+        if let Some(goal) = match &ai.plan {
             Some(Target::Entity(entity)) => match query.get(*entity) {
                 Ok((_, position)) => Some(position),
                 Err(_) => None,
@@ -488,24 +497,24 @@ fn snakes_planning(
             let delta_x = goal.x - snake.head_position.x;
             let delta_y = goal.y - snake.head_position.y;
             if delta_x < 0 {
-                snake.next = Some(LEFT);
+                ai.next = Some(LEFT);
             } else if delta_x > 0 {
-                snake.next = Some(RIGHT);
+                ai.next = Some(RIGHT);
             } else if delta_y < 0 {
-                snake.next = Some(DOWN);
+                ai.next = Some(DOWN);
             } else if delta_y > 0 {
-                snake.next = Some(UP);
+                ai.next = Some(UP);
             } else {
                 // Wherever you go, there you are
-                snake.next = None;
-                snake.plan = None;
-                snake.plan_timer.reset();
+                ai.next = None;
+                ai.plan = None;
+                ai.plan_timer.reset();
             }
         } else {
             // Target disappeared
-            snake.next = None;
-            snake.plan = None;
-            snake.plan_timer.reset();
+            ai.next = None;
+            ai.plan = None;
+            ai.plan_timer.reset();
         }
     }
 }
@@ -525,59 +534,15 @@ fn transformation(window: Query<&Window>, mut q: Query<(&Position, &mut Transfor
     }
 }
 
-fn set_mongoose_sprites(mongoose: Res<Mongoose>, mut query: Query<(&Position, &mut TextureAtlas)>) {
-    // TODO do this only after movement
-    let i_tail = mongoose.segments.len() - 2;
-    for (i, (f, b)) in mongoose.segments.iter().tuple_windows().enumerate() {
-        let [(pos_f, mut ta_f), (pos_b, mut ta_b)] = query.get_many_mut([*f, *b]).unwrap();
-
-        let direction = if pos_f.x - pos_b.x == -1 {
-            LEFT
-        } else if pos_f.x - pos_b.x == 1 {
-            RIGHT
-        } else if pos_f.y - pos_b.y == -1 {
-            DOWN
-        } else if pos_f.y - pos_b.y == 1 {
-            UP
-        } else {
-            0 // error
-        };
-        if i == 0 {
-            // Entity f is the head segment
-            ta_f.index = HEAD + direction;
-        } else {
-            ta_f.index = BODY
-                + match (direction, ta_f.index) {
-                    (LEFT, LEFT) => LEFT,
-                    (UP, UP) => UP,
-                    (RIGHT, RIGHT) => RIGHT,
-                    (DOWN, DOWN) => DOWN,
-                    (DOWN, LEFT) => CW_LEFT,
-                    (LEFT, UP) => CW_UP,
-                    (UP, RIGHT) => CW_RIGHT,
-                    (RIGHT, DOWN) => CW_DOWN,
-                    (UP, LEFT) => CCW_LEFT,
-                    (RIGHT, UP) => CCW_UP,
-                    (DOWN, RIGHT) => CCW_RIGHT,
-                    (LEFT, DOWN) => CCW_DOWN,
-                    _ => 0, // FIXME should cause error
-                }
-        }
-        if i == i_tail {
-            // Entity b is the tail segment
-            ta_b.index = TAIL + direction;
-        } else {
-            ta_b.index = direction;
-        }
-    }
-}
-
-fn set_snake_sprites(snakes: Res<Snakes>, mut query: Query<(&Position, &mut TextureAtlas)>) {
-    // TODO do this only after movement
-    for snake in &snakes.snakes {
-        let i_tail = snake.segments.len() - 2;
-        for (i, (f, b)) in snake.segments.iter().tuple_windows().enumerate() {
-            let [(pos_f, mut ta_f), (pos_b, mut ta_b)] = query.get_many_mut([*f, *b]).unwrap();
+fn set_segment_sprites(
+    things: Query<&Segmented>,
+    mut segments: Query<(&Position, &mut TextureAtlas)>,
+) {
+    for thing in &things {
+        // TODO do this only after movement, maybe check for a needs_redraw flag
+        let i_tail = thing.segments.len() - 2;
+        for (i, (f, b)) in thing.segments.iter().tuple_windows().enumerate() {
+            let [(pos_f, mut ta_f), (pos_b, mut ta_b)] = segments.get_many_mut([*f, *b]).unwrap();
 
             let direction = if pos_f.x - pos_b.x == -1 {
                 LEFT
@@ -624,18 +589,18 @@ fn set_snake_sprites(snakes: Res<Snakes>, mut query: Query<(&Position, &mut Text
 fn eat_berries(
     mut commands: Commands,
     mut scoreboard: ResMut<Scoreboard>,
-    mongoose: Res<Mongoose>,
-    snakes: Res<Snakes>,
+    mongoose: Query<&Segmented, With<Mongoose>>,
+    snakes: Query<&Segmented, With<Snake>>,
     query: Query<(Entity, &Position), With<Berry>>,
 ) {
-    let mongoose_position = mongoose.head_position;
+    let mongoose_position = mongoose.get_single().unwrap().head_position;
 
     for (berry, berry_position) in &query {
         if mongoose_position == *berry_position {
             commands.entity(berry).despawn();
             scoreboard.berries_eaten_by_mongoose += 1;
         } else {
-            for snake in &snakes.snakes {
+            for snake in &snakes {
                 if snake.head_position == *berry_position {
                     commands.entity(berry).despawn();
                     scoreboard.berries_eaten_by_snakes += 1;
@@ -662,8 +627,6 @@ fn main() {
         }))
         .insert_resource(Scoreboard { ..default() })
         .insert_resource(ClearColor(BACKGROUND_COLOR))
-        .insert_resource(Mongoose { ..default() })
-        .insert_resource(Snakes { ..default() })
         .insert_resource(InputTimer(Timer::from_seconds(0.2, TimerMode::Once)))
         .insert_resource(BerrySpawnTimer(Timer::from_seconds(
             3.0,
@@ -673,7 +636,7 @@ fn main() {
             5.0,
             TimerMode::Repeating,
         )))
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, spawn_scoreboard, spawn_mongoose).chain())
         // Add our gameplay simulation systems to the fixed timestep schedule
         // which runs at 64 Hz by default
         .add_systems(
@@ -685,8 +648,7 @@ fn main() {
                 snakes_planning,
                 spawn_berry,
                 transformation,
-                set_mongoose_sprites,
-                set_snake_sprites,
+                set_segment_sprites,
                 eat_berries,
             )
                 .chain(),
