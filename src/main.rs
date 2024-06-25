@@ -101,6 +101,11 @@ struct BerrySpawnTimer(Timer);
 #[derive(Resource)]
 struct SnakeSpawnTimer(Timer);
 
+#[derive(Event)]
+struct GrowEvent {
+    segmented: Entity,
+}
+
 fn spawn_mongoose(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -590,8 +595,9 @@ fn eat_berries(
     mut commands: Commands,
     mut scoreboard: ResMut<Scoreboard>,
     mongoose: Query<&Segmented, With<Mongoose>>,
-    snakes: Query<&Segmented, With<Snake>>,
+    snakes: Query<(Entity, &Segmented), With<Snake>>,
     query: Query<(Entity, &Position), With<Berry>>,
+    mut writer: EventWriter<GrowEvent>,
 ) {
     let mongoose_position = mongoose.get_single().unwrap().head_position;
 
@@ -600,12 +606,51 @@ fn eat_berries(
             commands.entity(berry).despawn();
             scoreboard.berries_eaten_by_mongoose += 1;
         } else {
-            for snake in &snakes {
+            for (entity, snake) in &snakes {
                 if snake.head_position == *berry_position {
                     commands.entity(berry).despawn();
                     scoreboard.berries_eaten_by_snakes += 1;
+                    writer.send(GrowEvent { segmented: entity });
                 }
             }
+        }
+    }
+}
+
+fn grow_snakes(
+    mut commands: Commands,
+    mut query: Query<&mut Segmented>,
+    mut reader: EventReader<GrowEvent>,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+) {
+    for event in reader.read() {
+        if let Ok(mut segmented) = query.get_mut(event.segmented) {
+            let texture = asset_server.load("snake.png");
+            let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
+                Vec2::splat(40.0),
+                SPRITE_SHEET_COLUMNS,
+                SPRITE_SHEET_ROWS,
+                None,
+                None,
+            ));
+            let position = segmented.head_position.clone();
+            segmented.segments.insert(
+                1,
+                commands
+                    .spawn((
+                        SpriteBundle {
+                            texture: texture.clone(),
+                            ..default()
+                        },
+                        TextureAtlas {
+                            layout: texture_atlas_layout.clone(),
+                            ..default()
+                        },
+                        position,
+                    ))
+                    .id(),
+            )
         }
     }
 }
@@ -625,6 +670,7 @@ fn main() {
             }),
             ..default()
         }))
+        .add_event::<GrowEvent>()
         .insert_resource(Scoreboard { ..default() })
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(InputTimer(Timer::from_seconds(0.2, TimerMode::Once)))
@@ -650,6 +696,7 @@ fn main() {
                 transformation,
                 set_segment_sprites,
                 eat_berries,
+                grow_snakes,
             )
                 .chain(),
         )
