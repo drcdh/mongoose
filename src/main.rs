@@ -56,35 +56,23 @@ struct Mongoose {
     segments: Vec<Entity>,
 }
 
-#[derive(Component)]
-struct MovementTimer(Timer);
-
-#[derive(Component)]
-struct PlanningTimer(Timer);
-
-#[derive(Component)]
-struct SnakeHead;
-
-#[derive(Component)]
-struct SnakeSegment {
-    from: usize,
-    to: usize,
-    type_offset: usize, // HEAD, BODY, or TAIL
-}
-
-#[derive(Component)]
+#[derive(Default)]
 struct Snake {
+    head_position: Position,
+    segments: Vec<Entity>,
+    move_timer: Timer,
+    plan_timer: Timer,
     next: Option<usize>, // LEFT, UP, RIGHT, or DOWN
+    plan: Option<Target>,
 }
 
+#[derive(Resource, Default)]
+struct Snakes {
+    snakes: Vec<Snake>,
+}
 enum Target {
     Position(Position),
     Entity(Entity),
-}
-
-#[derive(Component)]
-struct Plan {
-    target: Option<Target>,
 }
 
 #[derive(Component)]
@@ -127,49 +115,52 @@ fn spawn_mongoose(
         None,
     ));
     let (x, y) = (ARENA_WIDTH / 2, ARENA_HEIGHT / 2);
-    let head = commands
-        .spawn((
-            SpriteBundle {
-                texture: texture.clone(),
-                ..default()
-            },
-            TextureAtlas {
-                layout: texture_atlas_layout.clone(),
-                ..default()
-            },
-            Position { x, y },
-        ))
-        .id();
-    let body = commands
-        .spawn((
-            SpriteBundle {
-                texture: texture.clone(),
-                ..default()
-            },
-            TextureAtlas {
-                layout: texture_atlas_layout.clone(),
-                index: BODY + CCW_LEFT,
-            },
-            Position { x: x + 1, y },
-        ))
-        .id();
-    let tail = commands
-        .spawn((
-            SpriteBundle {
-                texture: texture.clone(),
-                ..default()
-            },
-            TextureAtlas {
-                layout: texture_atlas_layout.clone(),
-                index: TAIL + UP,
-            },
-            Position { x: x + 1, y: y - 1 },
-        ))
-        .id();
     (mongoose.head_position.x, mongoose.head_position.y) = (x, y);
-    mongoose.segments.push(head);
-    mongoose.segments.push(body);
-    mongoose.segments.push(tail);
+    mongoose.segments.push(
+        commands
+            .spawn((
+                SpriteBundle {
+                    texture: texture.clone(),
+                    ..default()
+                },
+                TextureAtlas {
+                    layout: texture_atlas_layout.clone(),
+                    ..default()
+                },
+                Position { x, y },
+            ))
+            .id(),
+    );
+    mongoose.segments.push(
+        commands
+            .spawn((
+                SpriteBundle {
+                    texture: texture.clone(),
+                    ..default()
+                },
+                TextureAtlas {
+                    layout: texture_atlas_layout.clone(),
+                    index: BODY + CCW_LEFT,
+                },
+                Position { x: x + 1, y },
+            ))
+            .id(),
+    );
+    mongoose.segments.push(
+        commands
+            .spawn((
+                SpriteBundle {
+                    texture: texture.clone(),
+                    ..default()
+                },
+                TextureAtlas {
+                    layout: texture_atlas_layout.clone(),
+                    index: TAIL + UP,
+                },
+                Position { x: x + 1, y: y - 1 },
+            ))
+            .id(),
+    );
 }
 
 fn spawn_scoreboard(commands: &mut Commands) {
@@ -222,8 +213,9 @@ fn spawn_berry(mut commands: Commands, time: Res<Time>, mut timer: ResMut<BerryS
     }
 }
 
-fn spawn_snake(
+fn spawn_snakes(
     mut commands: Commands,
+    mut snakes: ResMut<Snakes>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
     mut timer: ResMut<SnakeSpawnTimer>,
@@ -241,6 +233,7 @@ fn spawn_snake(
         None,
     ));
     let mut rng = thread_rng();
+    let n = rng.gen_range(0..=3); // number of starting body segments
     let p = rng.gen_range(-2..ARENA_HEIGHT + 2);
     let side = rng.gen_range(0..4);
     let (x, y) = match side {
@@ -250,79 +243,60 @@ fn spawn_snake(
         DOWN => (p, -3),
         _ => (0, 0), // error
     };
-    let snake = commands
-        .spawn((
-            SpriteBundle::default(),
-            Snake { next: None },
-            Plan { target: None },
-            MovementTimer(Timer::from_seconds(
-                SNAKE_MOVEMENT_PERIOD,
-                TimerMode::Repeating,
-            )),
-            PlanningTimer(Timer::from_seconds(
-                SNAKE_PLANNING_PERIOD,
-                TimerMode::Repeating,
-            )),
-        ))
-        .id();
-    let head = commands
-        .spawn((
-            SpriteBundle {
-                texture: texture.clone(),
-                ..default()
-            },
-            TextureAtlas {
-                layout: texture_atlas_layout.clone(),
-                ..default()
-            },
-            SnakeHead,
-            SnakeSegment {
-                to: UP,
-                from: LEFT,
-                type_offset: HEAD,
-            },
-            Position { x, y },
-        ))
-        .id();
-    commands.entity(snake).add_child(head);
-    let body = commands
-        .spawn((
-            SpriteBundle {
-                texture: texture.clone(),
-                ..default()
-            },
-            TextureAtlas {
-                layout: texture_atlas_layout.clone(),
-                ..default()
-            },
-            SnakeSegment {
-                to: LEFT,
-                from: UP,
-                type_offset: BODY,
-            },
-            Position { x: x + 1, y },
-        ))
-        .id();
-    commands.entity(snake).add_child(body);
-    let tail = commands
-        .spawn((
-            SpriteBundle {
-                texture: texture.clone(),
-                ..default()
-            },
-            TextureAtlas {
-                layout: texture_atlas_layout.clone(),
-                index: TAIL + UP,
-            },
-            SnakeSegment {
-                to: UP,
-                from: UP,
-                type_offset: TAIL,
-            },
-            Position { x: x + 1, y: y - 1 },
-        ))
-        .id();
-    commands.entity(snake).add_child(tail);
+    let mut snake = Snake {
+        head_position: Position { x, y },
+        move_timer: Timer::from_seconds(SNAKE_MOVEMENT_PERIOD, TimerMode::Once),
+        plan_timer: Timer::from_seconds(SNAKE_PLANNING_PERIOD, TimerMode::Once),
+        ..default()
+    };
+    snake.segments.push(
+        commands
+            .spawn((
+                SpriteBundle {
+                    texture: texture.clone(),
+                    ..default()
+                },
+                TextureAtlas {
+                    layout: texture_atlas_layout.clone(),
+                    ..default()
+                },
+                Position { x, y },
+            ))
+            .id(),
+    );
+    for _ in 0..n {
+        snake.segments.push(
+            commands
+                .spawn((
+                    SpriteBundle {
+                        texture: texture.clone(),
+                        ..default()
+                    },
+                    TextureAtlas {
+                        layout: texture_atlas_layout.clone(),
+                        ..default()
+                    },
+                    Position { x, y },
+                ))
+                .id(),
+        );
+    }
+    snake.segments.push(
+        commands
+            .spawn((
+                SpriteBundle {
+                    texture: texture.clone(),
+                    ..default()
+                },
+                TextureAtlas {
+                    layout: texture_atlas_layout.clone(),
+                    ..default()
+                },
+                Position { x, y },
+            ))
+            .id(),
+    );
+    snakes.snakes.push(snake);
 }
 
 fn setup(
@@ -435,67 +409,84 @@ fn mongoose_movement(
     input_timer.0.reset();
 }
 
-fn snake_moving(
-    mut snakes_query: Query<(&Snake, &Children, &mut MovementTimer)>,
-    mut positions_query: Query<(&mut Position, &mut SnakeSegment)>,
+fn snakes_movement(
+    mut commands: Commands,
+    mut snakes: ResMut<Snakes>,
     time: Res<Time>,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
-    for (snake, segments_entities, mut timer) in &mut snakes_query {
-        if timer.0.tick(time.delta()).just_finished() {
-            if let Some(mut next_direction) = snake.next {
-                let mut head = true;
-                for segment_entry in segments_entities {
-                    let (mut segment_position, mut segment) =
-                        positions_query.get_mut(*segment_entry).unwrap();
-                    if head {
-                        segment.to = next_direction;
-                    }
-                    segment_position.x += match segment.to {
-                        LEFT => -1,
-                        RIGHT => 1,
-                        _ => 0,
-                    };
-                    segment_position.y += match segment.to {
-                        UP => 1,
-                        DOWN => -1,
-                        _ => 0,
-                    };
-                    // Create new bindings
-                    let (next, to) = (next_direction, segment.to);
-                    (segment.to, segment.from, next_direction) = (next, to, to);
-                    head = false;
-                }
+    for snake in &mut snakes.snakes {
+        if !snake.move_timer.tick(time.delta()).finished() {
+            continue;
+        }
+        if let Some(next_direction) = snake.next {
+            let texture = asset_server.load("snake.png");
+            let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
+                Vec2::splat(40.0),
+                SPRITE_SHEET_COLUMNS,
+                SPRITE_SHEET_ROWS,
+                None,
+                None,
+            ));
+            if next_direction == LEFT {
+                snake.head_position.x -= 1;
+            } else if next_direction == RIGHT {
+                snake.head_position.x += 1;
+            } else if next_direction == UP {
+                snake.head_position.y += 1;
+            } else if next_direction == DOWN {
+                snake.head_position.y -= 1;
             }
+            snake.segments.insert(
+                0,
+                commands
+                    .spawn((
+                        SpriteBundle {
+                            texture: texture.clone(),
+                            ..default()
+                        },
+                        TextureAtlas {
+                            layout: texture_atlas_layout.clone(),
+                            ..default()
+                        },
+                        snake.head_position.clone(),
+                    ))
+                    .id(),
+            );
+            // Remove the old tail segment
+            commands.entity(snake.segments.pop().unwrap()).despawn();
+
+            snake.move_timer.reset();
         }
     }
 }
 
-fn snake_planning(
-    positions: Query<&Position>,
-    berries: Query<Entity, With<Berry>>,
-    mut snakes: Query<(&mut Snake, &Children, &mut Plan, &mut PlanningTimer)>,
-    head_positions: Query<&Position, With<SnakeHead>>,
+fn snakes_planning(
+    query: Query<(Entity, &Position), With<Berry>>,
+    mut snakes: ResMut<Snakes>,
     time: Res<Time>,
 ) {
-    for (mut snake, children, mut plan, mut timer) in &mut snakes {
-        if timer.0.tick(time.delta()).just_finished() {
-            // TODO just take the first berry for now
-            if let Some(berry) = berries.iter().next() {
-                plan.target = Some(Target::Entity(berry));
-            }
+    for snake in &mut snakes.snakes {
+        if !snake.plan_timer.tick(time.delta()).finished() {
+            continue;
         }
-        if let Some(goal) = match &plan.target {
-            Some(Target::Entity(entity)) => match positions.get(*entity) {
-                Ok(position) => Some(position),
+        // TODO just take the first berry for now
+        if let Some((berry, _)) = query.iter().next() {
+            snake.plan = Some(Target::Entity(berry));
+        }
+
+        if let Some(goal) = match &snake.plan {
+            Some(Target::Entity(entity)) => match query.get(*entity) {
+                Ok((_, position)) => Some(position),
                 Err(_) => None,
             },
             Some(Target::Position(position)) => Some(position),
             None => None,
         } {
             // pathfinding o_o
-            let head_position = head_positions.get(*children.get(0).unwrap()).unwrap();
-            let delta_x = goal.x - head_position.x;
-            let delta_y = goal.y - head_position.y;
+            let delta_x = goal.x - snake.head_position.x;
+            let delta_y = goal.y - snake.head_position.y;
             if delta_x < 0 {
                 snake.next = Some(LEFT);
             } else if delta_x > 0 {
@@ -507,11 +498,14 @@ fn snake_planning(
             } else {
                 // Wherever you go, there you are
                 snake.next = None;
-                plan.target = None;
+                snake.plan = None;
+                snake.plan_timer.reset();
             }
         } else {
+            // Target disappeared
             snake.next = None;
-            plan.target = None;
+            snake.plan = None;
+            snake.plan_timer.reset();
         }
     }
 }
@@ -578,40 +572,51 @@ fn set_mongoose_sprites(mongoose: Res<Mongoose>, mut query: Query<(&Position, &m
     }
 }
 
-fn set_snake_sprites(mut texture_atlas_query: Query<(&mut TextureAtlas, &SnakeSegment)>) {
-    for (mut ta, segment) in &mut texture_atlas_query {
-        ta.index = segment.type_offset;
-        ta.index += match segment.type_offset {
-            HEAD => match segment.from {
-                LEFT => 0,
-                UP => 1,
-                RIGHT => 2,
-                DOWN => 3,
-                _ => 0, // FIXME should cause error
-            },
-            BODY => match (segment.from, segment.to) {
-                (LEFT, LEFT) => LEFT,
-                (UP, UP) => UP,
-                (RIGHT, RIGHT) => RIGHT,
-                (DOWN, DOWN) => DOWN,
-                (DOWN, LEFT) => CW_LEFT,
-                (LEFT, UP) => CW_UP,
-                (UP, RIGHT) => CW_RIGHT,
-                (RIGHT, DOWN) => CW_DOWN,
-                (UP, LEFT) => CCW_LEFT,
-                (RIGHT, UP) => CCW_UP,
-                (DOWN, RIGHT) => CCW_RIGHT,
-                (LEFT, DOWN) => CCW_DOWN,
-                _ => 0, // FIXME should cause error
-            },
-            TAIL => match segment.to {
-                LEFT => 0,
-                UP => 1,
-                RIGHT => 2,
-                DOWN => 3,
-                _ => 0, // FIXME should cause error
-            },
-            _ => 0, // FIXME should cause error
+fn set_snake_sprites(snakes: Res<Snakes>, mut query: Query<(&Position, &mut TextureAtlas)>) {
+    // TODO do this only after movement
+    for snake in &snakes.snakes {
+        let i_tail = snake.segments.len() - 2;
+        for (i, (f, b)) in snake.segments.iter().tuple_windows().enumerate() {
+            let [(pos_f, mut ta_f), (pos_b, mut ta_b)] = query.get_many_mut([*f, *b]).unwrap();
+
+            let direction = if pos_f.x - pos_b.x == -1 {
+                LEFT
+            } else if pos_f.x - pos_b.x == 1 {
+                RIGHT
+            } else if pos_f.y - pos_b.y == -1 {
+                DOWN
+            } else if pos_f.y - pos_b.y == 1 {
+                UP
+            } else {
+                0 // error
+            };
+            if i == 0 {
+                // Entity f is the head segment
+                ta_f.index = HEAD + direction;
+            } else {
+                ta_f.index = BODY
+                    + match (direction, ta_f.index) {
+                        (LEFT, LEFT) => LEFT,
+                        (UP, UP) => UP,
+                        (RIGHT, RIGHT) => RIGHT,
+                        (DOWN, DOWN) => DOWN,
+                        (DOWN, LEFT) => CW_LEFT,
+                        (LEFT, UP) => CW_UP,
+                        (UP, RIGHT) => CW_RIGHT,
+                        (RIGHT, DOWN) => CW_DOWN,
+                        (UP, LEFT) => CCW_LEFT,
+                        (RIGHT, UP) => CCW_UP,
+                        (DOWN, RIGHT) => CCW_RIGHT,
+                        (LEFT, DOWN) => CCW_DOWN,
+                        _ => 0, // FIXME should cause error
+                    }
+            }
+            if i == i_tail {
+                // Entity b is the tail segment
+                ta_b.index = TAIL + direction;
+            } else {
+                ta_b.index = direction;
+            }
         }
     }
 }
@@ -620,18 +625,18 @@ fn eat_berries(
     mut commands: Commands,
     mut scoreboard: ResMut<Scoreboard>,
     mongoose: Res<Mongoose>,
-    snake_positions: Query<&Position, With<SnakeHead>>,
-    berry_positions: Query<(Entity, &Position), With<Berry>>,
+    snakes: Res<Snakes>,
+    query: Query<(Entity, &Position), With<Berry>>,
 ) {
     let mongoose_position = mongoose.head_position;
 
-    for (berry, berry_position) in &berry_positions {
+    for (berry, berry_position) in &query {
         if mongoose_position == *berry_position {
             commands.entity(berry).despawn();
             scoreboard.berries_eaten_by_mongoose += 1;
         } else {
-            for snake_position in &snake_positions {
-                if snake_position == berry_position {
+            for snake in &snakes.snakes {
+                if snake.head_position == *berry_position {
                     commands.entity(berry).despawn();
                     scoreboard.berries_eaten_by_snakes += 1;
                 }
@@ -658,6 +663,7 @@ fn main() {
         .insert_resource(Scoreboard { ..default() })
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(Mongoose { ..default() })
+        .insert_resource(Snakes { ..default() })
         .insert_resource(InputTimer(Timer::from_seconds(0.2, TimerMode::Once)))
         .insert_resource(BerrySpawnTimer(Timer::from_seconds(
             3.0,
@@ -674,9 +680,9 @@ fn main() {
             FixedUpdate,
             (
                 mongoose_movement,
-                spawn_snake,
-                snake_moving,
-                snake_planning,
+                spawn_snakes,
+                snakes_movement,
+                snakes_planning,
                 spawn_berry,
                 transformation,
                 set_mongoose_sprites,
