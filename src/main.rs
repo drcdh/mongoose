@@ -601,11 +601,12 @@ fn set_segment_sprites(
                         (RIGHT, UP) => CCW_UP,
                         (DOWN, RIGHT) => CCW_RIGHT,
                         (LEFT, DOWN) => CCW_DOWN,
-                        _ => panic!(
-                            "Nonsense pair of directions {} {}",
-                            direction.unwrap(),
-                            ta_f.index
-                        ),
+                        _ => 0, // FIXME restore the panic after we've implemented segments collision detection
+                                /*_ => panic!(
+                                    "Nonsense pair of directions {} {}",
+                                    direction.unwrap(),
+                                    ta_f.index
+                                ),*/
                     };
             }
             if i == i_tail {
@@ -721,15 +722,15 @@ fn main() {
         .add_systems(
             FixedUpdate,
             (
-                mongoose_movement,
                 spawn_snakes,
-                snakes_movement,
                 snakes_planning,
-                spawn_berry,
-                transformation,
-                set_segment_sprites,
+                snakes_movement,
+                mongoose_movement,
                 eat_berries,
                 grow_snakes,
+                set_segment_sprites,
+                spawn_berry,
+                transformation,
             )
                 .chain(),
         )
