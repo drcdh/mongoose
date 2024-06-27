@@ -557,7 +557,7 @@ fn set_segment_sprites(
     things: Query<&Segmented>,
     mut segments: Query<(&Position, &mut TextureAtlas)>,
 ) {
-    for thing in &things {
+    'things: for thing in &things {
         // TODO do this only after movement, maybe check for a needs_redraw flag
         let i_tail = thing.segments.len() - 2;
         for (i, (f, b)) in thing.segments.iter().tuple_windows().enumerate() {
@@ -566,22 +566,29 @@ fn set_segment_sprites(
                 .expect("Failed to get segments pair");
 
             let direction = if pos_f.x - pos_b.x == -1 {
-                LEFT
+                Some(LEFT)
             } else if pos_f.x - pos_b.x == 1 {
-                RIGHT
+                Some(RIGHT)
             } else if pos_f.y - pos_b.y == -1 {
-                DOWN
+                Some(DOWN)
             } else if pos_f.y - pos_b.y == 1 {
-                UP
+                Some(UP)
+            } else if pos_f.x == pos_b.x && pos_f.y == pos_b.y {
+                None // Growth just occured
             } else {
-                0 // error
+                panic!("Successive segments are neither adjacent nor at the same place");
             };
+            if direction == None {
+                ta_f.index += TAIL;
+                ta_b.index = SPRITE_SHEET_COLUMNS - 1; // Should be a blank sprite
+                continue 'things;
+            }
             if i == 0 {
                 // Entity f is the head segment
-                ta_f.index = HEAD + direction;
+                ta_f.index = HEAD + direction.unwrap();
             } else {
                 ta_f.index = BODY
-                    + match (direction, ta_f.index) {
+                    + match (direction.unwrap(), ta_f.index) {
                         (LEFT, LEFT) => LEFT,
                         (UP, UP) => UP,
                         (RIGHT, RIGHT) => RIGHT,
@@ -595,13 +602,13 @@ fn set_segment_sprites(
                         (DOWN, RIGHT) => CCW_RIGHT,
                         (LEFT, DOWN) => CCW_DOWN,
                         _ => 0, // FIXME should cause error
-                    }
+                    };
             }
             if i == i_tail {
                 // Entity b is the tail segment
-                ta_b.index = TAIL + direction;
+                ta_b.index = TAIL + direction.unwrap();
             } else {
-                ta_b.index = direction;
+                ta_b.index = direction.unwrap();
             }
         }
     }
@@ -638,13 +645,14 @@ fn eat_berries(
 
 fn grow_snakes(
     mut commands: Commands,
-    mut query: Query<&mut Segmented>,
+    mut snakes: Query<&mut Segmented>,
+    positions: Query<&Position>,
     mut reader: EventReader<GrowEvent>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
     for event in reader.read() {
-        if let Ok(mut segmented) = query.get_mut(event.segmented) {
+        if let Ok(mut segmented) = snakes.get_mut(event.segmented) {
             let texture = asset_server.load("snake.png");
             let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
                 Vec2::splat(40.0),
@@ -653,9 +661,11 @@ fn grow_snakes(
                 None,
                 None,
             ));
-            let position = segmented.head_position.clone();
-            segmented.segments.insert(
-                1,
+            let tail_position = positions
+                .get(*segmented.segments.last().expect("Segments vector is empty"))
+                .expect("Tail position missing")
+                .clone();
+            segmented.segments.push(
                 commands
                     .spawn((
                         SpriteBundle {
@@ -666,7 +676,7 @@ fn grow_snakes(
                             layout: texture_atlas_layout.clone(),
                             ..default()
                         },
-                        position,
+                        tail_position,
                     ))
                     .id(),
             )
