@@ -379,7 +379,7 @@ fn mongoose_movement(
     } else if delta_y < 0 {
         DOWN
     } else {
-        0 // error
+        panic!();
     };
 
     let mut mongoose = mongoose.get_single_mut().expect("Mongoose entity missing");
