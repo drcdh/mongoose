@@ -372,7 +372,7 @@ fn mongoose_movement(
         0 // error
     };
 
-    let mut mongoose = mongoose.get_single_mut().unwrap();
+    let mut mongoose = mongoose.get_single_mut().expect("Mongoose entity missing");
 
     // TODO collision detection with snakes and self
     if mongoose.head_position.x == 0 && next_direction == LEFT {
@@ -417,7 +417,14 @@ fn mongoose_movement(
             .id(),
     );
     // Remove the old tail segment
-    commands.entity(mongoose.segments.pop().unwrap()).despawn();
+    commands
+        .entity(
+            mongoose
+                .segments
+                .pop()
+                .expect("Mongoose tail segment missing at end of movement"),
+        )
+        .despawn();
 
     input_timer.0.reset();
 }
@@ -469,7 +476,14 @@ fn snakes_movement(
                     .id(),
             );
             // Remove the old tail segment
-            commands.entity(snake.segments.pop().unwrap()).despawn();
+            commands
+                .entity(
+                    snake
+                        .segments
+                        .pop()
+                        .expect("Snake tail segment missing at end of movement"),
+                )
+                .despawn();
 
             ai.move_timer.reset();
         }
@@ -547,7 +561,9 @@ fn set_segment_sprites(
         // TODO do this only after movement, maybe check for a needs_redraw flag
         let i_tail = thing.segments.len() - 2;
         for (i, (f, b)) in thing.segments.iter().tuple_windows().enumerate() {
-            let [(pos_f, mut ta_f), (pos_b, mut ta_b)] = segments.get_many_mut([*f, *b]).unwrap();
+            let [(pos_f, mut ta_f), (pos_b, mut ta_b)] = segments
+                .get_many_mut([*f, *b])
+                .expect("Failed to get segments pair");
 
             let direction = if pos_f.x - pos_b.x == -1 {
                 LEFT
@@ -599,7 +615,10 @@ fn eat_berries(
     query: Query<(Entity, &Position), With<Berry>>,
     mut writer: EventWriter<GrowEvent>,
 ) {
-    let mongoose_position = mongoose.get_single().unwrap().head_position;
+    let mongoose_position = mongoose
+        .get_single()
+        .expect("Mongoose entity missing")
+        .head_position;
 
     for (berry, berry_position) in &query {
         if mongoose_position == *berry_position {
