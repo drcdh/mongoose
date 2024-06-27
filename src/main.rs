@@ -601,7 +601,11 @@ fn set_segment_sprites(
                         (RIGHT, UP) => CCW_UP,
                         (DOWN, RIGHT) => CCW_RIGHT,
                         (LEFT, DOWN) => CCW_DOWN,
-                        _ => 0, // FIXME should cause error
+                        _ => panic!(
+                            "Nonsense pair of directions {} {}",
+                            direction.unwrap(),
+                            ta_f.index
+                        ),
                     };
             }
             if i == i_tail {
