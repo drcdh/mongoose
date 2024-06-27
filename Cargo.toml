@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+array2d = "0.3.2"
 bevy = { version = "0.13.2", features = ["dynamic_linking"] }
 itertools = "0.13.0"
 rand = "0.8.5"

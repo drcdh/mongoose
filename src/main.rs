@@ -1,3 +1,4 @@
+use array2d::Array2D;
 use itertools::Itertools;
 use rand::{thread_rng, Rng};
 
@@ -6,11 +7,6 @@ use bevy::{prelude::*, window::WindowResolution};
 const ARENA_HEIGHT: i32 = 20;
 const ARENA_WIDTH: i32 = 20;
 
-/* TODO
-const BERRY_Z: i32 = 1;
-const SNAKE_Z: i32 = 5;
-const MONGOOSE_Z: i32 = 10;
- */
 const SCOREBOARD_FONT_SIZE: f32 = 40.0;
 const SCOREBOARD_TEXT_PADDING: Val = Val::Px(5.0);
 
@@ -101,13 +97,49 @@ struct BerrySpawnTimer(Timer);
 #[derive(Resource)]
 struct SnakeSpawnTimer(Timer);
 
+#[derive(Resource)]
+struct Arena(Array2D<bool>);
+
 #[derive(Event)]
 struct GrowEvent {
     segmented: Entity,
 }
 
+impl Arena {
+    fn set(&mut self, x: i32, y: i32) {
+        if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
+            // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
+            return;
+        }
+        if self.0[(y as usize, x as usize)] {
+            panic!("Setting arena location ({} {}) that was already set", x, y);
+        }
+        self.0[(y as usize, x as usize)] = true;
+    }
+    fn unset(&mut self, x: i32, y: i32) {
+        if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
+            // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
+            return;
+        }
+        if !self.0[(y as usize, x as usize)] {
+            panic!(
+                "Unsetting arena location ({} {}) that was already unset",
+                x, y
+            );
+        }
+        self.0[(y as usize, x as usize)] = false;
+    }
+    fn isset(&self, x: i32, y: i32) -> bool {
+        if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
+            // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
+            return false;
+        }
+        self.0[(y as usize, x as usize)]
+    }
+}
 fn spawn_mongoose(
     mut commands: Commands,
+    mut arena: ResMut<Arena>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
@@ -138,6 +170,7 @@ fn spawn_mongoose(
             ))
             .id(),
     );
+    arena.set(x, y);
     segments.push(
         commands
             .spawn((
@@ -154,6 +187,7 @@ fn spawn_mongoose(
             ))
             .id(),
     );
+    arena.set(x + 1, y);
     segments.push(
         commands
             .spawn((
@@ -170,6 +204,7 @@ fn spawn_mongoose(
             ))
             .id(),
     );
+    arena.set(x + 1, y - 1);
     commands.spawn((
         Segmented {
             head_position,
@@ -231,6 +266,7 @@ fn spawn_berry(mut commands: Commands, time: Res<Time>, mut timer: ResMut<BerryS
 
 fn spawn_snakes(
     mut commands: Commands,
+    mut arena: ResMut<Arena>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
     mut timer: ResMut<SnakeSpawnTimer>,
@@ -249,14 +285,19 @@ fn spawn_snakes(
     ));
     let mut rng = thread_rng();
     let n = rng.gen_range(0..=3); // number of starting body segments
-    let p = rng.gen_range(-2..ARENA_HEIGHT + 2);
-    let side = rng.gen_range(0..4);
-    let (x, y, delta_x, delta_y) = match side {
-        LEFT => (-3, p, -1, 0),
-        UP => (p, 23, 0, 1),
-        RIGHT => (23, p, 1, 0),
-        DOWN => (p, -3, 0, -1),
-        _ => panic!("Bad spawn side"),
+    let (mut x, mut y, delta_x, delta_y) = loop {
+        let p = rng.gen_range(-2..ARENA_HEIGHT + 2); // TODO: check distribution of extant snakes to balance spawn locations
+        let side = rng.gen_range(0..4);
+        let (x, y, delta_x, delta_y) = match side {
+            LEFT => (-1, p, -1, 0),
+            UP => (p, 20, 0, 1),
+            RIGHT => (20, p, 1, 0),
+            DOWN => (p, -1, 0, -1),
+            _ => panic!("Bad spawn side"),
+        };
+        if !arena.isset(x, y) {
+            break (x, y, delta_x, delta_y);
+        }
     };
     let mut segments: Vec<Entity> = Vec::new();
     segments.push(
@@ -275,7 +316,10 @@ fn spawn_snakes(
             ))
             .id(),
     );
-    for i in 1..=n {
+    arena.set(x, y);
+    for _ in 1..=n {
+        x += delta_x;
+        y += delta_y;
         segments.push(
             commands
                 .spawn((
@@ -287,15 +331,15 @@ fn spawn_snakes(
                         layout: texture_atlas_layout.clone(),
                         ..default()
                     },
-                    Position {
-                        x: x + i * delta_x,
-                        y: y + i * delta_y,
-                    },
+                    Position { x, y },
                     Snake,
                 ))
                 .id(),
         );
+        arena.set(x, y);
     }
+    x += delta_x;
+    y += delta_y;
     segments.push(
         commands
             .spawn((
@@ -307,14 +351,12 @@ fn spawn_snakes(
                     layout: texture_atlas_layout.clone(),
                     ..default()
                 },
-                Position {
-                    x: x + (n + 1) * delta_x,
-                    y: y + (n + 1) * delta_y,
-                },
+                Position { x, y },
                 Snake,
             ))
             .id(),
     );
+    arena.set(x, y);
 
     commands.spawn((
         AI {
@@ -338,6 +380,7 @@ fn mongoose_movement(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut mongoose: Query<&mut Segmented, With<Mongoose>>,
     mut positions: Query<&mut Position, With<Mongoose>>,
+    mut arena: ResMut<Arena>,
     mut input_timer: ResMut<InputTimer>,
     time: Res<Time>,
 ) {
@@ -384,7 +427,6 @@ fn mongoose_movement(
 
     let mut mongoose = mongoose.get_single_mut().expect("Mongoose entity missing");
 
-    // TODO collision detection with snakes and self
     if mongoose.head_position.x == 0 && next_direction == LEFT {
         return;
     }
@@ -397,51 +439,70 @@ fn mongoose_movement(
     if mongoose.head_position.y == 0 && next_direction == DOWN {
         return;
     }
+    if arena.isset(
+        mongoose.head_position.x + delta_x,
+        mongoose.head_position.y + delta_y,
+    ) {
+        // Space is occupied
+        return;
+    }
     mongoose.head_position.x += delta_x;
     mongoose.head_position.y += delta_y;
+    arena.set(mongoose.head_position.x, mongoose.head_position.y);
     let mut gap_position = mongoose.head_position.clone();
     for s in mongoose.segments.iter() {
         let mut position = positions.get_mut(*s).unwrap();
         (position.x, gap_position.x) = (gap_position.x, position.x);
         (position.y, gap_position.y) = (gap_position.y, position.y);
     }
-
+    arena.unset(gap_position.x, gap_position.y);
     input_timer.0.reset();
 }
 
 fn snakes_movement(
     mut snakes: Query<(&mut AI, &mut Segmented), With<Snake>>,
     mut positions: Query<&mut Position, With<Snake>>,
+    mut arena: ResMut<Arena>,
     time: Res<Time>,
 ) {
     for (mut ai, mut snake) in &mut snakes {
         if !ai.move_timer.tick(time.delta()).finished() {
             continue;
         }
-        let mut head_position = positions
-            .get_mut(*snake.segments.first().expect("Snake segments empty"))
-            .expect("Missing head segment entity");
-        // TODO collision detection with other snakes and self
-        let mut gap_position = head_position.clone();
+        let mut delta_x = 0;
+        let mut delta_y = 0;
         if let Some(next_direction) = ai.next {
             if next_direction == LEFT {
-                snake.head_position.x -= 1;
-                head_position.x -= 1;
+                delta_x = -1;
             } else if next_direction == RIGHT {
-                snake.head_position.x += 1;
-                head_position.x += 1;
+                delta_x = 1;
             } else if next_direction == UP {
-                snake.head_position.y += 1;
-                head_position.y += 1;
+                delta_y = 1;
             } else if next_direction == DOWN {
-                snake.head_position.y -= 1;
-                head_position.y -= 1;
+                delta_y = -1;
             }
-
-            for s in snake.segments.iter().skip(1) {
+            if arena.isset(
+                snake.head_position.x + delta_x,
+                snake.head_position.y + delta_y,
+            ) {
+                // Space is occupied or outside the arena
+                return;
+            }
+            snake.head_position.x += delta_x;
+            snake.head_position.y += delta_y;
+            arena.set(snake.head_position.x, snake.head_position.y);
+            let mut gap_position = snake.head_position.clone();
+            let mut grown = false;
+            for s in snake.segments.iter() {
                 let mut position = positions.get_mut(*s).unwrap();
                 (position.x, gap_position.x) = (gap_position.x, position.x);
                 (position.y, gap_position.y) = (gap_position.y, position.y);
+                if position.x == gap_position.x && position.y == gap_position.y {
+                    grown = true;
+                }
+            }
+            if !grown {
+                arena.unset(gap_position.x, gap_position.y);
             }
         }
         ai.move_timer.reset();
@@ -664,6 +725,11 @@ fn main() {
             ..default()
         }))
         .add_event::<GrowEvent>()
+        .insert_resource(Arena(Array2D::filled_with(
+            false,
+            ARENA_HEIGHT as usize,
+            ARENA_WIDTH as usize,
+        )))
         .insert_resource(Scoreboard { ..default() })
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(InputTimer(Timer::from_seconds(0.2, TimerMode::Once)))
