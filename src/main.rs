@@ -134,6 +134,7 @@ fn spawn_mongoose(
                     ..default()
                 },
                 Position { x, y },
+                Mongoose,
             ))
             .id(),
     );
@@ -149,6 +150,7 @@ fn spawn_mongoose(
                     index: BODY + CCW_LEFT,
                 },
                 Position { x: x + 1, y },
+                Mongoose,
             ))
             .id(),
     );
@@ -164,6 +166,7 @@ fn spawn_mongoose(
                     index: TAIL + UP,
                 },
                 Position { x: x + 1, y: y - 1 },
+                Mongoose,
             ))
             .id(),
     );
@@ -332,13 +335,11 @@ fn setup(mut commands: Commands) {
 }
 
 fn mongoose_movement(
-    mut commands: Commands,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut mongoose: Query<&mut Segmented, With<Mongoose>>,
+    mut positions: Query<&mut Position, With<Mongoose>>,
     mut input_timer: ResMut<InputTimer>,
     time: Res<Time>,
-    asset_server: Res<AssetServer>,
-    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
     // TODO move this into a keyboard_input system
     // This system will take events instead
@@ -398,58 +399,29 @@ fn mongoose_movement(
     }
     mongoose.head_position.x += delta_x;
     mongoose.head_position.y += delta_y;
-
-    // TODO repeated code in snake_moving
-    let texture = asset_server.load("mongoose.png");
-    let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
-        Vec2::splat(40.0),
-        SPRITE_SHEET_COLUMNS,
-        SPRITE_SHEET_ROWS,
-        None,
-        None,
-    ));
-    let new_head_position = mongoose.head_position.clone();
-    mongoose.segments.insert(
-        0,
-        commands
-            .spawn((
-                SpriteBundle {
-                    texture: texture.clone(),
-                    ..default()
-                },
-                TextureAtlas {
-                    layout: texture_atlas_layout.clone(),
-                    ..default()
-                },
-                new_head_position,
-            ))
-            .id(),
-    );
-    // Remove the old tail segment
-    commands
-        .entity(
-            mongoose
-                .segments
-                .pop()
-                .expect("Mongoose tail segment missing at end of movement"),
-        )
-        .despawn();
+    let mut gap_position = mongoose.head_position.clone();
+    for s in mongoose.segments.iter() {
+        let mut position = positions.get_mut(*s).unwrap();
+        (position.x, gap_position.x) = (gap_position.x, position.x);
+        (position.y, gap_position.y) = (gap_position.y, position.y);
+    }
 
     input_timer.0.reset();
 }
 
 fn snakes_movement(
     mut snakes: Query<(&mut AI, &mut Segmented), With<Snake>>,
-    mut segments: Query<&mut Position, With<Snake>>,
+    mut positions: Query<&mut Position, With<Snake>>,
     time: Res<Time>,
 ) {
     for (mut ai, mut snake) in &mut snakes {
         if !ai.move_timer.tick(time.delta()).finished() {
             continue;
         }
-        let mut head_position = segments
+        let mut head_position = positions
             .get_mut(*snake.segments.first().expect("Snake segments empty"))
             .expect("Missing head segment entity");
+        // TODO collision detection with other snakes and self
         let mut gap_position = head_position.clone();
         if let Some(next_direction) = ai.next {
             if next_direction == LEFT {
@@ -467,7 +439,7 @@ fn snakes_movement(
             }
 
             for s in snake.segments.iter().skip(1) {
-                let mut position = segments.get_mut(*s).unwrap();
+                let mut position = positions.get_mut(*s).unwrap();
                 (position.x, gap_position.x) = (gap_position.x, position.x);
                 (position.y, gap_position.y) = (gap_position.y, position.y);
             }
