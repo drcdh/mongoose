@@ -248,12 +248,12 @@ fn spawn_snakes(
     let n = rng.gen_range(0..=3); // number of starting body segments
     let p = rng.gen_range(-2..ARENA_HEIGHT + 2);
     let side = rng.gen_range(0..4);
-    let (x, y) = match side {
-        LEFT => (-3, p),
-        UP => (p, 23),
-        RIGHT => (23, p),
-        DOWN => (p, -3),
-        _ => (0, 0), // error
+    let (x, y, delta_x, delta_y) = match side {
+        LEFT => (-3, p, -1, 0),
+        UP => (p, 23, 0, 1),
+        RIGHT => (23, p, 1, 0),
+        DOWN => (p, -3, 0, -1),
+        _ => panic!("Bad spawn side"),
     };
     let mut segments: Vec<Entity> = Vec::new();
     segments.push(
@@ -268,10 +268,11 @@ fn spawn_snakes(
                     ..default()
                 },
                 Position { x, y },
+                Snake,
             ))
             .id(),
     );
-    for _ in 0..n {
+    for i in 1..=n {
         segments.push(
             commands
                 .spawn((
@@ -283,7 +284,11 @@ fn spawn_snakes(
                         layout: texture_atlas_layout.clone(),
                         ..default()
                     },
-                    Position { x, y },
+                    Position {
+                        x: x + i * delta_x,
+                        y: y + i * delta_y,
+                    },
+                    Snake,
                 ))
                 .id(),
         );
@@ -299,7 +304,11 @@ fn spawn_snakes(
                     layout: texture_atlas_layout.clone(),
                     ..default()
                 },
-                Position { x, y },
+                Position {
+                    x: x + (n + 1) * delta_x,
+                    y: y + (n + 1) * delta_y,
+                },
+                Snake,
             ))
             .id(),
     );
@@ -430,63 +439,40 @@ fn mongoose_movement(
 }
 
 fn snakes_movement(
-    mut commands: Commands,
-    mut query: Query<(&mut AI, &mut Segmented), With<Snake>>,
+    mut snakes: Query<(&mut AI, &mut Segmented), With<Snake>>,
+    mut segments: Query<&mut Position, With<Snake>>,
     time: Res<Time>,
-    asset_server: Res<AssetServer>,
-    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
-    for (mut ai, mut snake) in &mut query {
+    for (mut ai, mut snake) in &mut snakes {
         if !ai.move_timer.tick(time.delta()).finished() {
             continue;
         }
+        let mut head_position = segments
+            .get_mut(*snake.segments.first().expect("Snake segments empty"))
+            .expect("Missing head segment entity");
+        let mut gap_position = head_position.clone();
         if let Some(next_direction) = ai.next {
-            let texture = asset_server.load("snake.png");
-            let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
-                Vec2::splat(40.0),
-                SPRITE_SHEET_COLUMNS,
-                SPRITE_SHEET_ROWS,
-                None,
-                None,
-            ));
             if next_direction == LEFT {
                 snake.head_position.x -= 1;
+                head_position.x -= 1;
             } else if next_direction == RIGHT {
                 snake.head_position.x += 1;
+                head_position.x += 1;
             } else if next_direction == UP {
                 snake.head_position.y += 1;
+                head_position.y += 1;
             } else if next_direction == DOWN {
                 snake.head_position.y -= 1;
+                head_position.y -= 1;
             }
-            let new_position = snake.head_position.clone();
-            snake.segments.insert(
-                0,
-                commands
-                    .spawn((
-                        SpriteBundle {
-                            texture: texture.clone(),
-                            ..default()
-                        },
-                        TextureAtlas {
-                            layout: texture_atlas_layout.clone(),
-                            ..default()
-                        },
-                        new_position,
-                    ))
-                    .id(),
-            );
-            // Remove the old tail segment
-            commands
-                .entity(
-                    snake
-                        .segments
-                        .pop()
-                        .expect("Snake tail segment missing at end of movement"),
-                )
-                .despawn();
 
-            ai.move_timer.reset();
+            for s in snake.segments.iter().skip(1) {
+                let mut position = segments.get_mut(*s).unwrap();
+                (position.x, gap_position.x) = (gap_position.x, position.x);
+                (position.y, gap_position.y) = (gap_position.y, position.y);
+            }
         }
+        ai.move_timer.reset();
     }
 }
 
@@ -682,6 +668,7 @@ fn grow_snakes(
                             ..default()
                         },
                         tail_position,
+                        Snake,
                     ))
                     .id(),
             )
