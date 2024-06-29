@@ -1,8 +1,18 @@
+use bimap::BiMap;
+use std::collections::VecDeque;
+
 use array2d::Array2D;
 use itertools::Itertools;
 use rand::{thread_rng, Rng};
 
-use bevy::{prelude::*, window::WindowResolution};
+use bevy::{
+    prelude::*,
+    utils::{
+        hashbrown::HashMap,
+        petgraph::{algo::dijkstra, graph::NodeIndex, visit::EdgeRef, Graph, Undirected},
+    },
+    window::WindowResolution,
+};
 
 const ARENA_HEIGHT: i32 = 20;
 const ARENA_WIDTH: i32 = 20;
@@ -63,10 +73,11 @@ struct Snake;
 struct AI {
     move_timer: Timer,
     plan_timer: Timer,
-    next: Option<usize>, // LEFT, UP, RIGHT, or DOWN
-    plan: Option<Target>,
+    path: VecDeque<Position>,
+    target: Option<Target>,
 }
 
+#[derive(Clone)]
 enum Target {
     Position(Position),
     Entity(Entity),
@@ -98,7 +109,11 @@ struct BerrySpawnTimer(Timer);
 struct SnakeSpawnTimer(Timer);
 
 #[derive(Resource)]
-struct Arena(Array2D<bool>);
+struct Arena {
+    graph: Graph<(), (), Undirected>,
+    nodes: BiMap<(usize, usize), NodeIndex>,
+    occ: Array2D<bool>,
+}
 
 #[derive(Event)]
 struct GrowEvent {
@@ -106,37 +121,104 @@ struct GrowEvent {
 }
 
 impl Arena {
+    fn new() -> Arena {
+        let mut graph = Graph::<(), (), Undirected>::new_undirected();
+        let mut nodes = BiMap::new();
+        for x in 0..ARENA_WIDTH as usize {
+            for y in 0..ARENA_HEIGHT as usize {
+                nodes.insert((x, y), graph.add_node(()));
+            }
+        }
+        let occ = Array2D::filled_with(false, ARENA_WIDTH as usize, ARENA_HEIGHT as usize);
+        Arena { graph, nodes, occ }
+    }
+    fn add_edges_with(&mut self, x: usize, y: usize) {
+        let n = *self.nodes.get_by_left(&(x, y)).unwrap();
+        if x < ARENA_WIDTH as usize && !self.occ[(x - 1, y)] {
+            self.graph
+                .add_edge(n, *self.nodes.get_by_left(&(x - 1, y)).unwrap(), ());
+        }
+        if y < ARENA_HEIGHT as usize && !self.occ[(x, y - 1)] {
+            self.graph
+                .add_edge(n, *self.nodes.get_by_left(&(x, y - 1)).unwrap(), ());
+        }
+        if x > 0 && !self.occ[(x + 1, y)] {
+            self.graph
+                .add_edge(n, *self.nodes.get_by_left(&(x + 1, y)).unwrap(), ());
+        }
+        if y > 0 && !self.occ[(x, y + 1)] {
+            self.graph
+                .add_edge(n, *self.nodes.get_by_left(&(x, y + 1)).unwrap(), ());
+        }
+    }
+    fn remove_edges_with(&mut self, x: usize, y: usize) {
+        let n = *self.nodes.get_by_left(&(x, y)).unwrap();
+        let edges = self.graph.edges(n);
+        let ids = edges.map(|er| er.id()).collect::<Vec<_>>();
+        self.graph.retain_edges(|_, ei| !ids.contains(&ei))
+    }
     fn set(&mut self, x: i32, y: i32) {
         if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
             // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
             return;
         }
-        if self.0[(y as usize, x as usize)] {
+        if self.occ[(x as usize, y as usize)] {
             panic!("Setting arena location ({} {}) that was already set", x, y);
         }
-        self.0[(y as usize, x as usize)] = true;
+        self.occ[(x as usize, y as usize)] = true;
+        self.remove_edges_with(x as usize, y as usize);
     }
     fn unset(&mut self, x: i32, y: i32) {
         if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
             // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
             return;
         }
-        if !self.0[(y as usize, x as usize)] {
+        if !self.occ[(x as usize, y as usize)] {
             panic!(
                 "Unsetting arena location ({} {}) that was already unset",
                 x, y
             );
         }
-        self.0[(y as usize, x as usize)] = false;
+        self.occ[(x as usize, y as usize)] = false;
+        self.add_edges_with(x as usize, y as usize);
     }
     fn isset(&self, x: i32, y: i32) -> bool {
         if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
             // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
             return false;
         }
-        self.0[(y as usize, x as usize)]
+        self.occ[(x as usize, y as usize)]
     }
 }
+
+impl AI {
+    fn plan_path(&mut self, p: &Position, goal: &Position, arena: &Arena) {
+        let path = dijkstra(
+            &arena.graph,
+            *arena
+                .nodes
+                .get_by_left(&(p.x as usize, p.y as usize))
+                .unwrap(),
+            Some(
+                *arena
+                    .nodes
+                    .get_by_left(&(goal.x as usize, goal.y as usize))
+                    .unwrap(),
+            ),
+            |_| 1,
+        );
+        let path: HashMap<i32, NodeIndex> = path.iter().map(|(k, v)| (*v, *k)).collect();
+        self.path = VecDeque::<Position>::from_iter((1..path.len() as i32).map(|i| {
+            let node = path.get(&i).unwrap();
+            let (x, y) = arena.nodes.get_by_right(node).unwrap();
+            Position {
+                x: *x as i32,
+                y: *y as i32,
+            }
+        }))
+    }
+}
+
 fn spawn_mongoose(
     mut commands: Commands,
     mut arena: ResMut<Arena>,
@@ -469,27 +551,13 @@ fn snakes_movement(
         if !ai.move_timer.tick(time.delta()).finished() {
             continue;
         }
-        let mut delta_x = 0;
-        let mut delta_y = 0;
-        if let Some(next_direction) = ai.next {
-            if next_direction == LEFT {
-                delta_x = -1;
-            } else if next_direction == RIGHT {
-                delta_x = 1;
-            } else if next_direction == UP {
-                delta_y = 1;
-            } else if next_direction == DOWN {
-                delta_y = -1;
-            }
-            if arena.isset(
-                snake.head_position.x + delta_x,
-                snake.head_position.y + delta_y,
-            ) {
+        if let Some(next_position) = ai.path.pop_front() {
+            if arena.isset(next_position.x, next_position.y) {
                 // Space is occupied or outside the arena
                 return;
             }
-            snake.head_position.x += delta_x;
-            snake.head_position.y += delta_y;
+            snake.head_position.x = next_position.x;
+            snake.head_position.y = next_position.y;
             arena.set(snake.head_position.x, snake.head_position.y);
             let mut gap_position = snake.head_position.clone();
             let mut grown = false;
@@ -505,6 +573,7 @@ fn snakes_movement(
                 arena.unset(gap_position.x, gap_position.y);
             }
         }
+
         ai.move_timer.reset();
     }
 }
@@ -512,46 +581,42 @@ fn snakes_movement(
 fn snakes_planning(
     query: Query<(Entity, &Position), With<Berry>>,
     mut snakes: Query<(&mut AI, &Segmented), With<Snake>>,
+    arena: Res<Arena>,
     time: Res<Time>,
 ) {
     for (mut ai, snake) in &mut snakes {
         if !ai.plan_timer.tick(time.delta()).finished() {
             continue;
         }
-        // TODO just take the first berry for now
-        if let Some((berry, _)) = query.iter().next() {
-            ai.plan = Some(Target::Entity(berry));
-        }
 
-        if let Some(goal) = match &ai.plan {
-            Some(Target::Entity(entity)) => match query.get(*entity) {
-                Ok((_, position)) => Some(position),
-                Err(_) => None,
-            },
-            Some(Target::Position(position)) => Some(position),
-            None => None,
-        } {
-            // pathfinding o_o
-            let delta_x = goal.x - snake.head_position.x;
-            let delta_y = goal.y - snake.head_position.y;
-            if delta_x < 0 {
-                ai.next = Some(LEFT);
-            } else if delta_x > 0 {
-                ai.next = Some(RIGHT);
-            } else if delta_y < 0 {
-                ai.next = Some(DOWN);
-            } else if delta_y > 0 {
-                ai.next = Some(UP);
-            } else {
-                // Wherever you go, there you are
-                ai.next = None;
-                ai.plan = None;
-                ai.plan_timer.reset();
+        // Choose a random location as the target
+        let mut rng = thread_rng();
+        let (x, y) = loop {
+            let (x, y) = (
+                rng.gen_range(0..ARENA_HEIGHT),
+                rng.gen_range(0..ARENA_HEIGHT),
+            );
+            if !arena.isset(x, y) {
+                break (x, y);
             }
+        };
+        ai.target = Some(Target::Position(Position { x, y }));
+
+        /*         if let Some(goal) = match ai.target {
+                   Some(Target::Entity(entity)) => match query.get(entity) {
+                       Ok((_, position)) => Some(position),
+                       Err(_) => None,
+                   },
+                   Some(Target::Position(position)) => Some(position),
+                   None => None,
+               } {
+        */
+        if let Some(Target::Position(goal)) = ai.target {
+            ai.plan_path(&snake.head_position, &goal, &arena);
         } else {
             // Target disappeared
-            ai.next = None;
-            ai.plan = None;
+            ai.path.clear();
+            ai.target = None;
             ai.plan_timer.reset();
         }
     }
@@ -725,11 +790,7 @@ fn main() {
             ..default()
         }))
         .add_event::<GrowEvent>()
-        .insert_resource(Arena(Array2D::filled_with(
-            false,
-            ARENA_HEIGHT as usize,
-            ARENA_WIDTH as usize,
-        )))
+        .insert_resource(Arena::new())
         .insert_resource(Scoreboard { ..default() })
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(InputTimer(Timer::from_seconds(0.2, TimerMode::Once)))
