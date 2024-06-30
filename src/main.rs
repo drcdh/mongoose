@@ -50,7 +50,7 @@ const CCW_DOWN: usize = 11;
 const SNAKE_MOVEMENT_PERIOD: f32 = 0.5; // How often snakes move
 const SNAKE_PLANNING_PERIOD: f32 = 3.0; // How often snakes replan their goal position
 
-#[derive(Component, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Position {
     x: i32,
     y: i32,
@@ -77,7 +77,7 @@ struct AI {
     target: Option<Target>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Target {
     Position(Position),
     Entity(Entity),
@@ -163,6 +163,7 @@ impl Arena {
             return;
         }
         if self.occ[(x as usize, y as usize)] {
+            pretty_print(&self.occ);
             panic!("Setting arena location ({} {}) that was already set", x, y);
         }
         self.occ[(x as usize, y as usize)] = true;
@@ -347,27 +348,19 @@ fn spawn_berry(mut commands: Commands, time: Res<Time>, mut timer: ResMut<BerryS
 }
 
 fn spawn_snakes(
-    mut commands: Commands,
-    mut arena: ResMut<Arena>,
+    commands: Commands,
+    arena: ResMut<Arena>,
     asset_server: Res<AssetServer>,
-    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+    texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
     mut timer: ResMut<SnakeSpawnTimer>,
     time: Res<Time>,
 ) {
     if !timer.0.tick(time.delta()).just_finished() {
         return;
     }
-    let texture = asset_server.load("snake.png");
-    let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
-        Vec2::splat(40.0),
-        SPRITE_SHEET_COLUMNS,
-        SPRITE_SHEET_ROWS,
-        None,
-        None,
-    ));
     let mut rng = thread_rng();
     let n = rng.gen_range(0..=3); // number of starting body segments
-    let (mut x, mut y, delta_x, delta_y) = loop {
+    let (x, y, delta_x, delta_y) = loop {
         let p = rng.gen_range(-2..ARENA_HEIGHT + 2); // TODO: check distribution of extant snakes to balance spawn locations
         let side = rng.gen_range(0..4);
         let (x, y, delta_x, delta_y) = match side {
@@ -381,6 +374,39 @@ fn spawn_snakes(
             break (x, y, delta_x, delta_y);
         }
     };
+    spawn_snake(
+        commands,
+        arena,
+        asset_server,
+        texture_atlas_layouts,
+        x,
+        y,
+        n,
+        delta_x,
+        delta_y,
+    );
+}
+
+fn spawn_snake(
+    mut commands: Commands,
+    mut arena: ResMut<Arena>,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+    x: i32,
+    y: i32,
+    n: i32,
+    delta_x: i32,
+    delta_y: i32,
+) {
+    let (mut x, mut y) = (x, y);
+    let texture = asset_server.load("snake.png");
+    let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
+        Vec2::splat(40.0),
+        SPRITE_SHEET_COLUMNS,
+        SPRITE_SHEET_ROWS,
+        None,
+        None,
+    ));
     let mut segments: Vec<Entity> = Vec::new();
     segments.push(
         commands
@@ -588,6 +614,11 @@ fn snakes_planning(
         if !ai.plan_timer.tick(time.delta()).finished() {
             continue;
         }
+        ai.plan_timer.reset();
+
+        if ai.path.len() > 0 {
+            continue;
+        }
 
         // Choose a random location as the target
         let mut rng = thread_rng();
@@ -601,7 +632,7 @@ fn snakes_planning(
             }
         };
         ai.target = Some(Target::Position(Position { x, y }));
-
+        println!("{:?}", ai.target);
         /*         if let Some(goal) = match ai.target {
                    Some(Target::Entity(entity)) => match query.get(entity) {
                        Ok((_, position)) => Some(position),
@@ -613,11 +644,11 @@ fn snakes_planning(
         */
         if let Some(Target::Position(goal)) = ai.target {
             ai.plan_path(&snake.head_position, &goal, &arena);
+            println!("{:?}", ai.path);
         } else {
             // Target disappeared
             ai.path.clear();
             ai.target = None;
-            ai.plan_timer.reset();
         }
     }
 }
@@ -802,13 +833,14 @@ fn main() {
             5.0,
             TimerMode::Repeating,
         )))
-        .add_systems(Startup, (setup, spawn_scoreboard, spawn_mongoose).chain())
-        // Add our gameplay simulation systems to the fixed timestep schedule
-        // which runs at 64 Hz by default
+        .add_systems(
+            Startup,
+            (setup, spawn_scoreboard, spawn_mongoose, test_spawn_snake).chain(),
+        )
         .add_systems(
             FixedUpdate,
             (
-                spawn_snakes,
+                //                spawn_snakes,
                 snakes_planning,
                 snakes_movement,
                 mongoose_movement,
@@ -822,4 +854,35 @@ fn main() {
         )
         .add_systems(Update, (update_scoreboard, bevy::window::close_on_esc))
         .run();
+}
+
+fn test_spawn_snake(
+    commands: Commands,
+    arena: ResMut<Arena>,
+    asset_server: Res<AssetServer>,
+    texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+) {
+    let (x, y) = (3, 3);
+    let n = 1;
+    let (delta_x, delta_y) = (-1, 0);
+    spawn_snake(
+        commands,
+        arena,
+        asset_server,
+        texture_atlas_layouts,
+        x,
+        y,
+        n,
+        delta_x,
+        delta_y,
+    );
+}
+
+fn pretty_print(a: &Array2D<bool>) {
+    for x in 0..ARENA_WIDTH as usize {
+        for y in 0..ARENA_HEIGHT as usize {
+            print!("{} ", if a[(x, y)] { "1" } else { "0" });
+        }
+        println!();
+    }
 }
