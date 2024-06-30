@@ -7,15 +7,18 @@ use rand::{thread_rng, Rng};
 
 use bevy::{
     prelude::*,
-    utils::{
-        hashbrown::HashMap,
-        petgraph::{algo::dijkstra, graph::NodeIndex, visit::EdgeRef, Graph, Undirected},
+    utils::petgraph::{
+        algo::{all_simple_paths, simple_paths},
+        dot::Dot,
+        graph::NodeIndex,
+        visit::EdgeRef,
+        Graph, Undirected,
     },
     window::WindowResolution,
 };
 
-const ARENA_HEIGHT: i32 = 20;
-const ARENA_WIDTH: i32 = 20;
+const ARENA_HEIGHT: i32 = 8;
+const ARENA_WIDTH: i32 = 8;
 
 const SCOREBOARD_FONT_SIZE: f32 = 40.0;
 const SCOREBOARD_TEXT_PADDING: Val = Val::Px(5.0);
@@ -129,26 +132,44 @@ impl Arena {
                 nodes.insert((x, y), graph.add_node(()));
             }
         }
+        for i in 0..ARENA_WIDTH as usize {
+            for j in 0..ARENA_HEIGHT as usize {
+                if i < (ARENA_WIDTH - 1) as usize {
+                    graph.add_edge(
+                        *nodes.get_by_left(&(i, j)).unwrap(),
+                        *nodes.get_by_left(&(i + 1, j)).unwrap(),
+                        (),
+                    );
+                }
+                if j < (ARENA_HEIGHT - 1) as usize {
+                    graph.add_edge(
+                        *nodes.get_by_left(&(i, j)).unwrap(),
+                        *nodes.get_by_left(&(i, j + 1)).unwrap(),
+                        (),
+                    );
+                }
+            }
+        }
         let occ = Array2D::filled_with(false, ARENA_WIDTH as usize, ARENA_HEIGHT as usize);
         Arena { graph, nodes, occ }
     }
     fn add_edges_with(&mut self, x: usize, y: usize) {
         let n = *self.nodes.get_by_left(&(x, y)).unwrap();
-        if x < ARENA_WIDTH as usize && !self.occ[(x - 1, y)] {
-            self.graph
-                .add_edge(n, *self.nodes.get_by_left(&(x - 1, y)).unwrap(), ());
-        }
-        if y < ARENA_HEIGHT as usize && !self.occ[(x, y - 1)] {
-            self.graph
-                .add_edge(n, *self.nodes.get_by_left(&(x, y - 1)).unwrap(), ());
-        }
-        if x > 0 && !self.occ[(x + 1, y)] {
+        if x < (ARENA_WIDTH - 1) as usize && !self.occ[(x + 1, y)] {
             self.graph
                 .add_edge(n, *self.nodes.get_by_left(&(x + 1, y)).unwrap(), ());
         }
-        if y > 0 && !self.occ[(x, y + 1)] {
+        if y < (ARENA_HEIGHT - 1) as usize && !self.occ[(x, y + 1)] {
             self.graph
                 .add_edge(n, *self.nodes.get_by_left(&(x, y + 1)).unwrap(), ());
+        }
+        if x > 0 && !self.occ[(x - 1, y)] {
+            self.graph
+                .add_edge(n, *self.nodes.get_by_left(&(x - 1, y)).unwrap(), ());
+        }
+        if y > 0 && !self.occ[(x, y - 1)] {
+            self.graph
+                .add_edge(n, *self.nodes.get_by_left(&(x, y - 1)).unwrap(), ());
         }
     }
     fn remove_edges_with(&mut self, x: usize, y: usize) {
@@ -163,7 +184,6 @@ impl Arena {
             return;
         }
         if self.occ[(x as usize, y as usize)] {
-            pretty_print(&self.occ);
             panic!("Setting arena location ({} {}) that was already set", x, y);
         }
         self.occ[(x as usize, y as usize)] = true;
@@ -193,30 +213,37 @@ impl Arena {
 }
 
 impl AI {
-    fn plan_path(&mut self, p: &Position, goal: &Position, arena: &Arena) {
-        let path = dijkstra(
+    fn plan_path(&mut self, p: &Position, goal: &Position, arena: &mut Arena) {
+        println!("Planning to go from {:?} to {:?}", p, goal);
+        arena.unset(p.x, p.y); // Temporarily unset the start position for pathplanning
+        let paths = all_simple_paths::<Vec<_>, _>(
             &arena.graph,
             *arena
                 .nodes
                 .get_by_left(&(p.x as usize, p.y as usize))
                 .unwrap(),
-            Some(
-                *arena
-                    .nodes
-                    .get_by_left(&(goal.x as usize, goal.y as usize))
-                    .unwrap(),
-            ),
-            |_| 1,
-        );
-        let path: HashMap<i32, NodeIndex> = path.iter().map(|(k, v)| (*v, *k)).collect();
-        self.path = VecDeque::<Position>::from_iter((1..path.len() as i32).map(|i| {
-            let node = path.get(&i).unwrap();
-            let (x, y) = arena.nodes.get_by_right(node).unwrap();
-            Position {
-                x: *x as i32,
-                y: *y as i32,
-            }
-        }))
+            *arena
+                .nodes
+                .get_by_left(&(goal.x as usize, goal.y as usize))
+                .unwrap(),
+            0,
+            Some(8),
+        )
+        .collect::<Vec<_>>();
+
+        arena.set(p.x, p.y);
+        if let Some(path) = paths.first() {
+            self.path = path
+                .iter()
+                .map(|n| {
+                    let (x, y) = *arena.nodes.get_by_right(n).unwrap();
+                    Position {
+                        x: x as i32,
+                        y: y as i32,
+                    }
+                })
+                .collect();
+        }
     }
 }
 
@@ -407,6 +434,7 @@ fn spawn_snake(
         None,
         None,
     ));
+    let head_position = Position { x, y };
     let mut segments: Vec<Entity> = Vec::new();
     segments.push(
         commands
@@ -473,7 +501,7 @@ fn spawn_snake(
             ..default()
         },
         Segmented {
-            head_position: Position { x, y },
+            head_position,
             segments,
         },
         Snake,
@@ -607,7 +635,7 @@ fn snakes_movement(
 fn snakes_planning(
     query: Query<(Entity, &Position), With<Berry>>,
     mut snakes: Query<(&mut AI, &Segmented), With<Snake>>,
-    arena: Res<Arena>,
+    mut arena: ResMut<Arena>,
     time: Res<Time>,
 ) {
     for (mut ai, snake) in &mut snakes {
@@ -632,7 +660,13 @@ fn snakes_planning(
             }
         };
         ai.target = Some(Target::Position(Position { x, y }));
-        println!("{:?}", ai.target);
+        println!(
+            "Head position={:?}, target={:?}",
+            snake.head_position, ai.target
+        );
+        pretty_print(&arena.occ);
+        //println!("{:?}", Dot::new(&arena.graph));
+
         /*         if let Some(goal) = match ai.target {
                    Some(Target::Entity(entity)) => match query.get(entity) {
                        Ok((_, position)) => Some(position),
@@ -643,7 +677,7 @@ fn snakes_planning(
                } {
         */
         if let Some(Target::Position(goal)) = ai.target {
-            ai.plan_path(&snake.head_position, &goal, &arena);
+            ai.plan_path(&snake.head_position, &goal, &mut arena);
             println!("{:?}", ai.path);
         } else {
             // Target disappeared
@@ -691,6 +725,10 @@ fn set_segment_sprites(
             } else if pos_f.x == pos_b.x && pos_f.y == pos_b.y {
                 None // Growth just occured
             } else {
+                println!(
+                    "Segment {}, f ({}, {}), b ({}, {})",
+                    i, pos_f.x, pos_f.y, pos_b.x, pos_b.y
+                );
                 panic!("Successive segments are neither adjacent nor at the same place");
             };
             if direction == None {
@@ -812,14 +850,20 @@ fn update_scoreboard(scoreboard: Res<Scoreboard>, mut query: Query<&mut Text, Wi
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Mongoose!".into(),
-                resolution: WindowResolution::new(800., 800.).with_scale_factor_override(1.0),
+        .add_plugins(
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Mongoose!".into(),
+                    resolution: WindowResolution::new(
+                        (40 * ARENA_WIDTH) as f32,
+                        (40 * ARENA_HEIGHT) as f32,
+                    )
+                    .with_scale_factor_override(1.0),
+                    ..default()
+                }),
                 ..default()
             }),
-            ..default()
-        }))
+        )
         .add_event::<GrowEvent>()
         .insert_resource(Arena::new())
         .insert_resource(Scoreboard { ..default() })
@@ -862,7 +906,7 @@ fn test_spawn_snake(
     asset_server: Res<AssetServer>,
     texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
-    let (x, y) = (3, 3);
+    let (x, y) = (3, 0);
     let n = 1;
     let (delta_x, delta_y) = (-1, 0);
     spawn_snake(
