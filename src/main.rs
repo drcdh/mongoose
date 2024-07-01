@@ -665,18 +665,6 @@ fn snakes_planning(
             "Head position={:?}, target={:?}",
             snake.head_position, ai.target
         );
-        pretty_print(&arena.occ);
-        //println!("{:?}", Dot::new(&arena.graph));
-
-        /*         if let Some(goal) = match ai.target {
-                   Some(Target::Entity(entity)) => match query.get(entity) {
-                       Ok((_, position)) => Some(position),
-                       Err(_) => None,
-                   },
-                   Some(Target::Position(position)) => Some(position),
-                   None => None,
-               } {
-        */
         if let Some(Target::Position(goal)) = ai.target {
             ai.plan_path(&snake.head_position, &goal, &mut arena);
             println!("{:?}", ai.path);
