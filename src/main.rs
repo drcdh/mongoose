@@ -8,11 +8,7 @@ use rand::{thread_rng, Rng};
 use bevy::{
     prelude::*,
     utils::petgraph::{
-        algo::{all_simple_paths, simple_paths},
-        dot::Dot,
-        graph::NodeIndex,
-        visit::EdgeRef,
-        Graph, Undirected,
+        algo::all_simple_paths, graph::NodeIndex, visit::EdgeRef, Graph, Undirected,
     },
     window::WindowResolution,
 };
@@ -244,6 +240,10 @@ impl AI {
                 })
                 .collect();
         }
+    }
+    fn clear(&mut self) {
+        self.path.clear();
+        self.target = None;
     }
 }
 
@@ -608,6 +608,7 @@ fn snakes_movement(
         if let Some(next_position) = ai.path.pop_front() {
             if arena.isset(next_position.x, next_position.y) {
                 // Space is occupied or outside the arena
+                ai.clear();
                 return;
             }
             snake.head_position.x = next_position.x;
@@ -703,10 +704,10 @@ fn transformation(window: Query<&Window>, mut q: Query<(&Position, &mut Transfor
 }
 
 fn set_segment_sprites(
-    things: Query<&Segmented>,
+    things: Query<(&Segmented, Has<Mongoose>)>,
     mut segments: Query<(&Position, &mut TextureAtlas)>,
 ) {
-    'things: for thing in &things {
+    'things: for (thing, is_mongoose) in &things {
         // TODO do this only after movement, maybe check for a needs_redraw flag
         let i_tail = thing.segments.len() - 2;
         for (i, (f, b)) in thing.segments.iter().tuple_windows().enumerate() {
@@ -729,19 +730,23 @@ fn set_segment_sprites(
                     "Segment {}, f ({}, {}), b ({}, {})",
                     i, pos_f.x, pos_f.y, pos_b.x, pos_b.y
                 );
-                panic!("Successive segments are neither adjacent nor at the same place");
+                panic!(
+                    "Successive {} segments are neither adjacent nor at the same place",
+                    if is_mongoose { "mongoose" } else { "snake" }
+                );
             };
             if direction == None {
                 ta_f.index += TAIL;
                 ta_b.index = SPRITE_SHEET_COLUMNS - 1; // Should be a blank sprite
                 continue 'things;
             }
+            let direction = direction.unwrap();
             if i == 0 {
                 // Entity f is the head segment
-                ta_f.index = HEAD + direction.unwrap();
+                ta_f.index = HEAD + direction;
             } else {
                 ta_f.index = BODY
-                    + match (direction.unwrap(), ta_f.index) {
+                    + match (direction, ta_f.index) {
                         (LEFT, LEFT) => LEFT,
                         (UP, UP) => UP,
                         (RIGHT, RIGHT) => RIGHT,
@@ -764,9 +769,9 @@ fn set_segment_sprites(
             }
             if i == i_tail {
                 // Entity b is the tail segment
-                ta_b.index = TAIL + direction.unwrap();
+                ta_b.index = TAIL + direction;
             } else {
-                ta_b.index = direction.unwrap();
+                ta_b.index = direction;
             }
         }
     }
@@ -923,9 +928,17 @@ fn test_spawn_snake(
 }
 
 fn pretty_print(a: &Array2D<bool>) {
-    for x in 0..ARENA_WIDTH as usize {
-        for y in 0..ARENA_HEIGHT as usize {
-            print!("{} ", if a[(x, y)] { "1" } else { "0" });
+    println!();
+    for y in 0..ARENA_HEIGHT as usize {
+        for x in 0..ARENA_WIDTH as usize {
+            print!(
+                "{} ",
+                if a[(x, (ARENA_HEIGHT as usize) - 1 - y)] {
+                    "1"
+                } else {
+                    "0"
+                }
+            );
         }
         println!();
     }
