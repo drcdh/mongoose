@@ -231,6 +231,7 @@ impl AI {
         if let Some(path) = paths.first() {
             self.path = path
                 .iter()
+                .skip(1)
                 .map(|n| {
                     let (x, y) = *arena.nodes.get_by_right(n).unwrap();
                     Position {
@@ -608,6 +609,10 @@ fn snakes_movement(
         if let Some(next_position) = ai.path.pop_front() {
             if arena.isset(next_position.x, next_position.y) {
                 // Space is occupied or outside the arena
+                println!(
+                    "Position ({}, {}) is blocked",
+                    next_position.x, next_position.y
+                );
                 ai.clear();
                 return;
             }
@@ -670,8 +675,7 @@ fn snakes_planning(
             println!("{:?}", ai.path);
         } else {
             // Target disappeared
-            ai.path.clear();
-            ai.target = None;
+            ai.clear();
         }
     }
 }
