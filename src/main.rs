@@ -1,4 +1,5 @@
 use bimap::BiMap;
+use std::cmp::{max, min};
 use std::collections::VecDeque;
 
 use array2d::Array2D;
@@ -13,8 +14,8 @@ use bevy::{
     window::WindowResolution,
 };
 
-const ARENA_HEIGHT: i32 = 8;
-const ARENA_WIDTH: i32 = 8;
+const ARENA_HEIGHT: i32 = 20;
+const ARENA_WIDTH: i32 = 20;
 
 const SCOREBOARD_FONT_SIZE: f32 = 40.0;
 const SCOREBOARD_TEXT_PADDING: Val = Val::Px(5.0);
@@ -48,6 +49,7 @@ const CCW_DOWN: usize = 11;
 
 const SNAKE_MOVEMENT_PERIOD: f32 = 0.5; // How often snakes move
 const SNAKE_PLANNING_PERIOD: f32 = 3.0; // How often snakes replan their goal position
+const MAX_PATH_LENGTH: usize = 8; // Necessary to keep this modest, otherwise all_simple_paths takes forever
 
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Position {
@@ -223,11 +225,12 @@ impl AI {
                 .get_by_left(&(goal.x as usize, goal.y as usize))
                 .unwrap(),
             0,
-            Some(8),
+            Some(MAX_PATH_LENGTH),
         )
         .collect::<Vec<_>>();
 
-        arena.set(p.x, p.y);
+        arena.set(p.x, p.y); // Undo the temporary unset
+
         if let Some(path) = paths.first() {
             self.path = path
                 .iter()
@@ -386,16 +389,17 @@ fn spawn_snakes(
     if !timer.0.tick(time.delta()).just_finished() {
         return;
     }
+    // TODO: check distribution of extant snakes to balance spawn locations
     let mut rng = thread_rng();
     let n = rng.gen_range(0..=3); // number of starting body segments
     let (x, y, delta_x, delta_y) = loop {
-        let p = rng.gen_range(-2..ARENA_HEIGHT + 2); // TODO: check distribution of extant snakes to balance spawn locations
+        let p = rng.gen_range(0..ARENA_HEIGHT - 1);
         let side = rng.gen_range(0..4);
         let (x, y, delta_x, delta_y) = match side {
-            LEFT => (-1, p, -1, 0),
-            UP => (p, 20, 0, 1),
-            RIGHT => (20, p, 1, 0),
-            DOWN => (p, -1, 0, -1),
+            LEFT => (0, p, -1, 0),
+            UP => (p, ARENA_HEIGHT - 1, 0, 1),
+            RIGHT => (ARENA_WIDTH - 1, p, 1, 0),
+            DOWN => (p, 0, 0, -1),
             _ => panic!("Bad spawn side"),
         };
         if !arena.isset(x, y) {
@@ -655,12 +659,20 @@ fn snakes_planning(
         }
 
         // Choose a random location as the target
+        // Limit the distance to reflect MAX_PATH_LENGTH
+        let x_min = max(0, snake.head_position.x - (MAX_PATH_LENGTH as i32) / 2);
+        let y_min = max(0, snake.head_position.y - (MAX_PATH_LENGTH as i32) / 2);
+        let x_max = min(
+            ARENA_WIDTH - 1,
+            snake.head_position.x + (MAX_PATH_LENGTH as i32) / 2,
+        );
+        let y_max = min(
+            ARENA_HEIGHT - 1,
+            snake.head_position.y + (MAX_PATH_LENGTH as i32) / 2,
+        );
         let mut rng = thread_rng();
         let (x, y) = loop {
-            let (x, y) = (
-                rng.gen_range(0..ARENA_HEIGHT),
-                rng.gen_range(0..ARENA_HEIGHT),
-            );
+            let (x, y) = (rng.gen_range(x_min..=x_max), rng.gen_range(y_min..=y_max));
             if !arena.isset(x, y) {
                 break (x, y);
             }
@@ -876,12 +888,18 @@ fn main() {
         )))
         .add_systems(
             Startup,
-            (setup, spawn_scoreboard, spawn_mongoose, test_spawn_snake).chain(),
+            (
+                setup,
+                spawn_scoreboard,
+                spawn_mongoose,
+                //test_spawn_snake,
+            )
+                .chain(),
         )
         .add_systems(
             FixedUpdate,
             (
-                //                spawn_snakes,
+                spawn_snakes,
                 snakes_planning,
                 snakes_movement,
                 mongoose_movement,
