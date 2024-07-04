@@ -355,27 +355,45 @@ fn spawn_scoreboard(mut commands: Commands) {
     ));
 }
 
-fn spawn_berry(mut commands: Commands, time: Res<Time>, mut timer: ResMut<BerrySpawnTimer>) {
-    if timer.0.tick(time.delta()).just_finished() {
-        let mut rng = thread_rng();
+fn spawn_berries(
+    mut commands: Commands,
+    arena: ResMut<Arena>,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+    time: Res<Time>,
+    mut timer: ResMut<BerrySpawnTimer>,
+) {
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
+    let mut rng = thread_rng();
+    let (x, y) = loop {
         let x = rng.gen_range(0..ARENA_WIDTH);
         let y = rng.gen_range(0..ARENA_HEIGHT);
-        commands.spawn((
-            SpriteBundle {
-                transform: Transform {
-                    scale: Vec2::splat(BERRY_DIAMETER).extend(1.0),
-                    ..default()
-                },
-                sprite: Sprite {
-                    color: BERRY_COLOR,
-                    ..default()
-                },
-                ..default()
-            },
-            Berry,
-            Position { x, y },
-        ));
-    }
+        if !arena.isset(x, y) {
+            break (x, y);
+        }
+    };
+    let texture = asset_server.load("berry.png");
+    let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
+        Vec2::splat(40.0),
+        SPRITE_SHEET_COLUMNS,
+        SPRITE_SHEET_ROWS,
+        None,
+        None,
+    ));
+    commands.spawn((
+        SpriteBundle {
+            texture: texture.clone(),
+            ..default()
+        },
+        TextureAtlas {
+            layout: texture_atlas_layout.clone(),
+            ..default()
+        },
+        Berry,
+        Position { x, y },
+    ));
 }
 
 fn spawn_snakes(
@@ -906,7 +924,7 @@ fn main() {
                 eat_berries,
                 grow_snakes,
                 set_segment_sprites,
-                spawn_berry,
+                spawn_berries,
                 transformation,
             )
                 .chain(),
