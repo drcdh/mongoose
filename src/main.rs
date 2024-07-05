@@ -20,10 +20,7 @@ const ARENA_WIDTH: i32 = 20;
 const SCOREBOARD_FONT_SIZE: f32 = 40.0;
 const SCOREBOARD_TEXT_PADDING: Val = Val::Px(5.0);
 
-const BERRY_DIAMETER: f32 = 15.0;
-
 const BACKGROUND_COLOR: Color = Color::rgb(0.6, 0.9, 0.2);
-const BERRY_COLOR: Color = Color::rgb(1.0, 0.5, 0.5);
 const TEXT_COLOR: Color = Color::rgb(0.5, 0.5, 1.0);
 const SCORE_COLOR: Color = Color::rgb(1.0, 0.5, 0.5);
 
@@ -61,24 +58,21 @@ struct Position {
 }
 
 #[derive(Component)]
-struct Segmented {
-    head_position: Position,
-    segments: Vec<Entity>,
-}
+struct Berry;
 
 #[derive(Component)]
 struct Mongoose;
 
 #[derive(Component)]
+struct Rat;
+
+#[derive(Component)]
 struct Snake;
 
-#[derive(Component, Default)]
-// imagine some humongous quotation marks here
-struct AI {
-    move_timer: Timer,
-    plan_timer: Timer,
-    path: VecDeque<Position>,
-    target: Option<Target>,
+#[derive(Component)]
+struct Segmented {
+    head_position: Position,
+    segments: Vec<Entity>,
 }
 
 #[derive(Clone, Debug)]
@@ -87,21 +81,15 @@ enum Target {
     Entity(Entity),
 }
 
-#[derive(Component)]
-struct Berry;
-
-#[derive(Component)]
-struct Rat;
-
 #[derive(Resource, Default)]
 struct Scoreboard {
     berries_eaten_by_mongoose: usize,
     berries_eaten_by_rats: usize,
     berries_eaten_by_snakes: usize,
-    snakes_killed: usize,
     rats_eaten_by_mongoose: usize,
     rats_eaten_by_snakes: usize,
     rats_escaped: usize,
+    snakes_killed: usize,
 }
 
 #[derive(Component)]
@@ -119,18 +107,17 @@ struct RatSpawnTimer(Timer);
 #[derive(Resource)]
 struct SnakeSpawnTimer(Timer);
 
+#[derive(Event)]
+struct GrowEvent {
+    segmented: Entity,
+}
+
 #[derive(Resource)]
 struct Arena {
     graph: Graph<(), (), Undirected>,
     nodes: BiMap<(usize, usize), NodeIndex>,
     occ: Array2D<bool>,
 }
-
-#[derive(Event)]
-struct GrowEvent {
-    segmented: Entity,
-}
-
 impl Arena {
     fn new() -> Arena {
         let mut graph = Graph::<(), (), Undirected>::new_undirected();
@@ -220,6 +207,14 @@ impl Arena {
     }
 }
 
+#[derive(Component, Default)]
+// imagine some humongous quotation marks here
+struct AI {
+    move_timer: Timer,
+    plan_timer: Timer,
+    path: VecDeque<Position>,
+    target: Option<Target>,
+}
 impl AI {
     fn plan_path(&mut self, p: &Position, goal: &Position, arena: &mut Arena) {
         println!("Planning to go from {:?} to {:?}", p, goal);
@@ -259,6 +254,47 @@ impl AI {
         self.path.clear();
         self.target = None;
     }
+}
+
+fn spawn_berries(
+    mut commands: Commands,
+    arena: ResMut<Arena>,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+    time: Res<Time>,
+    mut timer: ResMut<BerrySpawnTimer>,
+) {
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
+    let mut rng = thread_rng();
+    let (x, y) = loop {
+        let x = rng.gen_range(0..ARENA_WIDTH);
+        let y = rng.gen_range(0..ARENA_HEIGHT);
+        if !arena.isset(x, y) {
+            break (x, y);
+        }
+    };
+    let texture = asset_server.load("berry.png");
+    let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
+        Vec2::splat(40.0),
+        SPRITE_SHEET_COLUMNS,
+        SPRITE_SHEET_ROWS,
+        None,
+        None,
+    ));
+    commands.spawn((
+        SpriteBundle {
+            texture: texture.clone(),
+            ..default()
+        },
+        TextureAtlas {
+            layout: texture_atlas_layout.clone(),
+            ..default()
+        },
+        Berry,
+        Position { x, y },
+    ));
 }
 
 fn spawn_mongoose(
@@ -335,74 +371,6 @@ fn spawn_mongoose(
             segments,
         },
         Mongoose,
-    ));
-}
-
-fn spawn_scoreboard(mut commands: Commands) {
-    commands.spawn((
-        ScoreboardUI,
-        TextBundle::from_sections([
-            TextSection::new(
-                "Score: ",
-                TextStyle {
-                    font_size: SCOREBOARD_FONT_SIZE,
-                    color: TEXT_COLOR,
-                    ..default()
-                },
-            ),
-            TextSection::from_style(TextStyle {
-                font_size: SCOREBOARD_FONT_SIZE,
-                color: SCORE_COLOR,
-                ..default()
-            }),
-        ])
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            top: SCOREBOARD_TEXT_PADDING,
-            left: SCOREBOARD_TEXT_PADDING,
-            ..default()
-        }),
-    ));
-}
-
-fn spawn_berries(
-    mut commands: Commands,
-    arena: ResMut<Arena>,
-    asset_server: Res<AssetServer>,
-    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
-    time: Res<Time>,
-    mut timer: ResMut<BerrySpawnTimer>,
-) {
-    if !timer.0.tick(time.delta()).just_finished() {
-        return;
-    }
-    let mut rng = thread_rng();
-    let (x, y) = loop {
-        let x = rng.gen_range(0..ARENA_WIDTH);
-        let y = rng.gen_range(0..ARENA_HEIGHT);
-        if !arena.isset(x, y) {
-            break (x, y);
-        }
-    };
-    let texture = asset_server.load("berry.png");
-    let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
-        Vec2::splat(40.0),
-        SPRITE_SHEET_COLUMNS,
-        SPRITE_SHEET_ROWS,
-        None,
-        None,
-    ));
-    commands.spawn((
-        SpriteBundle {
-            texture: texture.clone(),
-            ..default()
-        },
-        TextureAtlas {
-            layout: texture_atlas_layout.clone(),
-            ..default()
-        },
-        Berry,
-        Position { x, y },
     ));
 }
 
@@ -588,11 +556,98 @@ fn spawn_snake(
     ));
 }
 
-fn setup(mut commands: Commands) {
-    commands.spawn(Camera2dBundle::default());
+fn plan_rats(
+    berries: Query<Entity, With<Berry>>,
+    positions: Query<&Position, With<Berry>>,
+    mut rats: Query<(&mut AI, &Position), With<Rat>>,
+    mut arena: ResMut<Arena>,
+    time: Res<Time>,
+) {
+    for (mut ai, position) in &mut rats {
+        if !ai.plan_timer.tick(time.delta()).finished() {
+            continue;
+        }
+        ai.plan_timer.reset();
+
+        if ai.path.len() > 0 {
+            continue;
+        }
+        // TODO just take the first berry for now
+        if let Some(berry) = berries.iter().next() {
+            ai.target = Some(Target::Entity(berry));
+        }
+        println!("Rat position={:?}, target={:?}", position, ai.target);
+
+        // FIXME: We randomly select a berry Entity and then immediately pick
+        // out the associated Position, which seems silly. We want the rat to
+        // target the Berry, though, not its Position, so that if the Berry
+        // is eaten by something else, the Rat stops (TODO).
+        if let Some(goal) = match ai.target {
+            Some(Target::Entity(entity)) => Some(*positions.get(entity).unwrap()),
+            Some(Target::Position(position)) => Some(position),
+            None => None,
+        } {
+            ai.plan_path(&position, &goal, &mut arena);
+            println!("{:?}", ai.path);
+        } else {
+            // Target disappeared
+            ai.clear();
+        }
+    }
 }
 
-fn mongoose_movement(
+fn plan_snakes(
+    berries: Query<(Entity, &Position), With<Berry>>,
+    rats: Query<(Entity, &Position), With<Rat>>,
+    mut snakes: Query<(&mut AI, &Segmented), With<Snake>>,
+    mut arena: ResMut<Arena>,
+    time: Res<Time>,
+) {
+    for (mut ai, snake) in &mut snakes {
+        if !ai.plan_timer.tick(time.delta()).finished() {
+            continue;
+        }
+        ai.plan_timer.reset();
+
+        if ai.path.len() > 0 {
+            continue;
+        }
+
+        // Choose a random location as the target
+        // Limit the distance to reflect MAX_PATH_LENGTH
+        let x_min = max(0, snake.head_position.x - (MAX_PATH_LENGTH as i32) / 2);
+        let y_min = max(0, snake.head_position.y - (MAX_PATH_LENGTH as i32) / 2);
+        let x_max = min(
+            ARENA_WIDTH - 1,
+            snake.head_position.x + (MAX_PATH_LENGTH as i32) / 2,
+        );
+        let y_max = min(
+            ARENA_HEIGHT - 1,
+            snake.head_position.y + (MAX_PATH_LENGTH as i32) / 2,
+        );
+        let mut rng = thread_rng();
+        let (x, y) = loop {
+            let (x, y) = (rng.gen_range(x_min..=x_max), rng.gen_range(y_min..=y_max));
+            if !arena.isset(x, y) {
+                break (x, y);
+            }
+        };
+        ai.target = Some(Target::Position(Position { x, y }));
+        println!(
+            "Head position={:?}, target={:?}",
+            snake.head_position, ai.target
+        );
+        if let Some(Target::Position(goal)) = ai.target {
+            ai.plan_path(&snake.head_position, &goal, &mut arena);
+            println!("{:?}", ai.path);
+        } else {
+            // Target disappeared
+            ai.clear();
+        }
+    }
+}
+
+fn move_mongoose(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut mongoose: Query<&mut Segmented, With<Mongoose>>,
     mut positions: Query<&mut Position, With<Mongoose>>,
@@ -675,7 +730,7 @@ fn mongoose_movement(
     input_timer.0.reset();
 }
 
-fn rats_movement(
+fn move_rats(
     mut rats: Query<(&mut AI, &mut Position), With<Rat>>,
     mut arena: ResMut<Arena>,
     time: Res<Time>,
@@ -702,47 +757,7 @@ fn rats_movement(
     }
 }
 
-fn rats_planning(
-    berries: Query<Entity, With<Berry>>,
-    positions: Query<&Position, With<Berry>>,
-    mut rats: Query<(&mut AI, &Position), With<Rat>>,
-    mut arena: ResMut<Arena>,
-    time: Res<Time>,
-) {
-    for (mut ai, position) in &mut rats {
-        if !ai.plan_timer.tick(time.delta()).finished() {
-            continue;
-        }
-        ai.plan_timer.reset();
-
-        if ai.path.len() > 0 {
-            continue;
-        }
-        // TODO just take the first berry for now
-        if let Some(berry) = berries.iter().next() {
-            ai.target = Some(Target::Entity(berry));
-        }
-        println!("Rat position={:?}, target={:?}", position, ai.target);
-
-        // FIXME: We randomly select a berry Entity and then immediately pick
-        // out the associated Position, which seems silly. We want the rat to
-        // target the Berry, though, not its Position, so that if the Berry
-        // is eaten by something else, the Rat stops (TODO).
-        if let Some(goal) = match ai.target {
-            Some(Target::Entity(entity)) => Some(*positions.get(entity).unwrap()),
-            Some(Target::Position(position)) => Some(position),
-            None => None,
-        } {
-            ai.plan_path(&position, &goal, &mut arena);
-            println!("{:?}", ai.path);
-        } else {
-            // Target disappeared
-            ai.clear();
-        }
-    }
-}
-
-fn snakes_movement(
+fn move_snakes(
     mut snakes: Query<(&mut AI, &mut Segmented), With<Snake>>,
     mut positions: Query<&mut Position, With<Snake>>,
     mut arena: ResMut<Arena>,
@@ -781,56 +796,6 @@ fn snakes_movement(
         }
 
         ai.move_timer.reset();
-    }
-}
-
-fn snakes_planning(
-    query: Query<(Entity, &Position), With<Berry>>,
-    mut snakes: Query<(&mut AI, &Segmented), With<Snake>>,
-    mut arena: ResMut<Arena>,
-    time: Res<Time>,
-) {
-    for (mut ai, snake) in &mut snakes {
-        if !ai.plan_timer.tick(time.delta()).finished() {
-            continue;
-        }
-        ai.plan_timer.reset();
-
-        if ai.path.len() > 0 {
-            continue;
-        }
-
-        // Choose a random location as the target
-        // Limit the distance to reflect MAX_PATH_LENGTH
-        let x_min = max(0, snake.head_position.x - (MAX_PATH_LENGTH as i32) / 2);
-        let y_min = max(0, snake.head_position.y - (MAX_PATH_LENGTH as i32) / 2);
-        let x_max = min(
-            ARENA_WIDTH - 1,
-            snake.head_position.x + (MAX_PATH_LENGTH as i32) / 2,
-        );
-        let y_max = min(
-            ARENA_HEIGHT - 1,
-            snake.head_position.y + (MAX_PATH_LENGTH as i32) / 2,
-        );
-        let mut rng = thread_rng();
-        let (x, y) = loop {
-            let (x, y) = (rng.gen_range(x_min..=x_max), rng.gen_range(y_min..=y_max));
-            if !arena.isset(x, y) {
-                break (x, y);
-            }
-        };
-        ai.target = Some(Target::Position(Position { x, y }));
-        println!(
-            "Head position={:?}, target={:?}",
-            snake.head_position, ai.target
-        );
-        if let Some(Target::Position(goal)) = ai.target {
-            ai.plan_path(&snake.head_position, &goal, &mut arena);
-            println!("{:?}", ai.path);
-        } else {
-            // Target disappeared
-            ai.clear();
-        }
     }
 }
 
@@ -1003,6 +968,37 @@ fn grow_snakes(
     }
 }
 
+fn spawn_camera(mut commands: Commands) {
+    commands.spawn(Camera2dBundle::default());
+}
+
+fn spawn_scoreboard(mut commands: Commands) {
+    commands.spawn((
+        ScoreboardUI,
+        TextBundle::from_sections([
+            TextSection::new(
+                "Score: ",
+                TextStyle {
+                    font_size: SCOREBOARD_FONT_SIZE,
+                    color: TEXT_COLOR,
+                    ..default()
+                },
+            ),
+            TextSection::from_style(TextStyle {
+                font_size: SCOREBOARD_FONT_SIZE,
+                color: SCORE_COLOR,
+                ..default()
+            }),
+        ])
+        .with_style(Style {
+            position_type: PositionType::Absolute,
+            top: SCOREBOARD_TEXT_PADDING,
+            left: SCOREBOARD_TEXT_PADDING,
+            ..default()
+        }),
+    ));
+}
+
 fn update_scoreboard(scoreboard: Res<Scoreboard>, mut query: Query<&mut Text, With<ScoreboardUI>>) {
     let mut text = query.single_mut();
     text.sections[1].value = scoreboard.berries_eaten_by_mongoose.to_string();
@@ -1044,7 +1040,7 @@ fn main() {
         .add_systems(
             Startup,
             (
-                setup,
+                spawn_camera,
                 spawn_scoreboard,
                 spawn_mongoose,
                 //test_spawn_snake,
@@ -1056,11 +1052,11 @@ fn main() {
             (
                 spawn_rats,
                 spawn_snakes,
-                rats_planning,
-                rats_movement,
-                snakes_planning,
-                snakes_movement,
-                mongoose_movement,
+                plan_rats,
+                move_rats,
+                plan_snakes,
+                move_snakes,
+                move_mongoose,
                 eat_berries,
                 grow_snakes,
                 set_segment_sprites,
@@ -1073,6 +1069,7 @@ fn main() {
         .run();
 }
 
+#[allow(dead_code)] // FIXME
 fn test_spawn_snake(
     commands: Commands,
     arena: ResMut<Arena>,
@@ -1095,6 +1092,7 @@ fn test_spawn_snake(
     );
 }
 
+#[allow(dead_code)] // FIXME
 fn pretty_print(a: &Array2D<bool>) {
     println!();
     for y in 0..ARENA_HEIGHT as usize {
