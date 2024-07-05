@@ -47,6 +47,9 @@ const CCW_UP: usize = 9;
 const CCW_RIGHT: usize = 10;
 const CCW_DOWN: usize = 11;
 
+const RAT_MOVEMENT_PERIOD: f32 = 0.4;
+const RAT_PLANNING_PERIOD: f32 = 5.0;
+
 const SNAKE_MOVEMENT_PERIOD: f32 = 0.5; // How often snakes move
 const SNAKE_PLANNING_PERIOD: f32 = 3.0; // How often snakes replan their goal position
 const MAX_PATH_LENGTH: usize = 8; // Necessary to keep this modest, otherwise all_simple_paths takes forever
@@ -87,14 +90,18 @@ enum Target {
 #[derive(Component)]
 struct Berry;
 
+#[derive(Component)]
+struct Rat;
+
 #[derive(Resource, Default)]
 struct Scoreboard {
     berries_eaten_by_mongoose: usize,
+    berries_eaten_by_rats: usize,
     berries_eaten_by_snakes: usize,
     snakes_killed: usize,
-    mice_eaten_by_mongoose: usize,
-    mice_eaten_by_snakes: usize,
-    mice_escaped: usize,
+    rats_eaten_by_mongoose: usize,
+    rats_eaten_by_snakes: usize,
+    rats_escaped: usize,
 }
 
 #[derive(Component)]
@@ -105,6 +112,9 @@ struct InputTimer(Timer);
 
 #[derive(Resource)]
 struct BerrySpawnTimer(Timer);
+
+#[derive(Resource)]
+struct RatSpawnTimer(Timer);
 
 #[derive(Resource)]
 struct SnakeSpawnTimer(Timer);
@@ -396,6 +406,53 @@ fn spawn_berries(
     ));
 }
 
+fn spawn_rats(
+    mut commands: Commands,
+    mut arena: ResMut<Arena>,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+    time: Res<Time>,
+    mut timer: ResMut<RatSpawnTimer>,
+) {
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
+    let mut rng = thread_rng();
+    let (x, y) = loop {
+        let x = rng.gen_range(0..ARENA_WIDTH);
+        let y = rng.gen_range(0..ARENA_HEIGHT);
+        if !arena.isset(x, y) {
+            break (x, y);
+        }
+    };
+    let texture = asset_server.load("rat.png");
+    let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
+        Vec2::splat(40.0),
+        SPRITE_SHEET_COLUMNS,
+        SPRITE_SHEET_ROWS,
+        None,
+        None,
+    ));
+    commands.spawn((
+        AI {
+            move_timer: Timer::from_seconds(RAT_MOVEMENT_PERIOD, TimerMode::Once),
+            plan_timer: Timer::from_seconds(RAT_PLANNING_PERIOD, TimerMode::Once),
+            ..default()
+        },
+        SpriteBundle {
+            texture: texture.clone(),
+            ..default()
+        },
+        TextureAtlas {
+            layout: texture_atlas_layout.clone(),
+            ..default()
+        },
+        Rat,
+        Position { x, y },
+    ));
+    arena.set(x, y);
+}
+
 fn spawn_snakes(
     commands: Commands,
     arena: ResMut<Arena>,
@@ -618,6 +675,73 @@ fn mongoose_movement(
     input_timer.0.reset();
 }
 
+fn rats_movement(
+    mut rats: Query<(&mut AI, &mut Position), With<Rat>>,
+    mut arena: ResMut<Arena>,
+    time: Res<Time>,
+) {
+    for (mut ai, mut position) in &mut rats {
+        if !ai.move_timer.tick(time.delta()).finished() {
+            continue;
+        }
+        if let Some(next_position) = ai.path.pop_front() {
+            if arena.isset(next_position.x, next_position.y) {
+                // Space is occupied or outside the arena
+                println!(
+                    "Position ({}, {}) is blocked for rat",
+                    next_position.x, next_position.y
+                );
+                ai.clear();
+                return;
+            }
+            arena.unset(position.x, position.y);
+            (position.x, position.y) = (next_position.x, next_position.y);
+            arena.set(position.x, position.y);
+        }
+        ai.move_timer.reset();
+    }
+}
+
+fn rats_planning(
+    berries: Query<Entity, With<Berry>>,
+    positions: Query<&Position, With<Berry>>,
+    mut rats: Query<(&mut AI, &Position), With<Rat>>,
+    mut arena: ResMut<Arena>,
+    time: Res<Time>,
+) {
+    for (mut ai, position) in &mut rats {
+        if !ai.plan_timer.tick(time.delta()).finished() {
+            continue;
+        }
+        ai.plan_timer.reset();
+
+        if ai.path.len() > 0 {
+            continue;
+        }
+        // TODO just take the first berry for now
+        if let Some(berry) = berries.iter().next() {
+            ai.target = Some(Target::Entity(berry));
+        }
+        println!("Rat position={:?}, target={:?}", position, ai.target);
+
+        // FIXME: We randomly select a berry Entity and then immediately pick
+        // out the associated Position, which seems silly. We want the rat to
+        // target the Berry, though, not its Position, so that if the Berry
+        // is eaten by something else, the Rat stops (TODO).
+        if let Some(goal) = match ai.target {
+            Some(Target::Entity(entity)) => Some(*positions.get(entity).unwrap()),
+            Some(Target::Position(position)) => Some(position),
+            None => None,
+        } {
+            ai.plan_path(&position, &goal, &mut arena);
+            println!("{:?}", ai.path);
+        } else {
+            // Target disappeared
+            ai.clear();
+        }
+    }
+}
+
 fn snakes_movement(
     mut snakes: Query<(&mut AI, &mut Segmented), With<Snake>>,
     mut positions: Query<&mut Position, With<Snake>>,
@@ -803,6 +927,7 @@ fn eat_berries(
     mut commands: Commands,
     mut scoreboard: ResMut<Scoreboard>,
     mongoose: Query<&Segmented, With<Mongoose>>,
+    rats: Query<&Position, With<Rat>>,
     snakes: Query<(Entity, &Segmented), With<Snake>>,
     query: Query<(Entity, &Position), With<Berry>>,
     mut writer: EventWriter<GrowEvent>,
@@ -812,17 +937,25 @@ fn eat_berries(
         .expect("Mongoose entity missing")
         .head_position;
 
-    for (berry, berry_position) in &query {
+    'berries: for (berry, berry_position) in &query {
         if mongoose_position == *berry_position {
             commands.entity(berry).despawn();
             scoreboard.berries_eaten_by_mongoose += 1;
-        } else {
-            for (entity, snake) in &snakes {
-                if snake.head_position == *berry_position {
-                    commands.entity(berry).despawn();
-                    scoreboard.berries_eaten_by_snakes += 1;
-                    writer.send(GrowEvent { segmented: entity });
-                }
+            continue 'berries;
+        }
+        for (entity, snake) in &snakes {
+            if snake.head_position == *berry_position {
+                commands.entity(berry).despawn();
+                scoreboard.berries_eaten_by_snakes += 1;
+                writer.send(GrowEvent { segmented: entity });
+                continue 'berries;
+            }
+        }
+        for position in &rats {
+            if *position == *berry_position {
+                commands.entity(berry).despawn();
+                scoreboard.berries_eaten_by_rats += 1;
+                continue 'berries;
             }
         }
     }
@@ -900,6 +1033,10 @@ fn main() {
             3.0,
             TimerMode::Repeating,
         )))
+        .insert_resource(RatSpawnTimer(Timer::from_seconds(
+            5.0,
+            TimerMode::Repeating,
+        )))
         .insert_resource(SnakeSpawnTimer(Timer::from_seconds(
             5.0,
             TimerMode::Repeating,
@@ -917,7 +1054,10 @@ fn main() {
         .add_systems(
             FixedUpdate,
             (
+                spawn_rats,
                 spawn_snakes,
+                rats_planning,
+                rats_movement,
                 snakes_planning,
                 snakes_movement,
                 mongoose_movement,
