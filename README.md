@@ -7,11 +7,12 @@ Snakes grow larger when eating, but what eats the snakes?
   - [x] is player controlled
   - [x] sprite
   - [x] eats berries
+  - [x] eats rats
   - [ ] damages snakes
 - [ ] Berries
   - [x] spawn periodically
     - [ ] spawn with likelihood dependent on population
-  - [ ] sprite
+  - [x] sprite
 - [ ] Snakes
   - [x] spawn periodically
     - [ ] spawn with likelihood dependent on population
@@ -19,12 +20,13 @@ Snakes grow larger when eating, but what eats the snakes?
   - [ ] periodically target mice and berries
   - [ ] target mongoose if attacked (i.e. damage causes aggro)
 - [ ] Mice
-  - [ ] spawn periodically
+  - [x] spawn periodically
     - [ ] spawn with likelihood dependent on population
-  - [ ] sprite
-  - [ ] periodically target berries
+  - [x] sprite
+  - [x] periodically target berries
 - [ ] Display/UI
-  - [x] number of berries eaten
+  - [x] some score
+  - [ ] number of berries eaten
   - [ ] number of snakes killed
   - [ ] number of mice killed
   - [ ] number of mice escaped
