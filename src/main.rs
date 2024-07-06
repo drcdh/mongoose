@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use array2d::Array2D;
 use itertools::Itertools;
-use rand::{thread_rng, Rng};
+use rand::{seq::IteratorRandom, thread_rng, Rng};
 
 use bevy::{
     prelude::*,
@@ -218,7 +218,13 @@ struct AI {
 impl AI {
     fn plan_path(&mut self, p: &Position, goal: &Position, arena: &mut Arena) {
         println!("Planning to go from {:?} to {:?}", p, goal);
-        arena.unset(p.x, p.y); // Temporarily unset the start position for pathplanning
+        let reset = if arena.isset(p.x, p.y) {
+            // If the thing occupies space, temporarily unset the start position for pathplanning
+            arena.unset(p.x, p.y);
+            true
+        } else {
+            false
+        };
         let paths = all_simple_paths::<Vec<_>, _>(
             &arena.graph,
             *arena
@@ -234,7 +240,9 @@ impl AI {
         )
         .collect::<Vec<_>>();
 
-        arena.set(p.x, p.y); // Undo the temporary unset
+        if reset {
+            arena.set(p.x, p.y); // Undo the temporary unset
+        }
 
         if let Some(path) = paths.first() {
             self.path = path
@@ -418,7 +426,7 @@ fn spawn_rats(
         Rat,
         Position { x, y },
     ));
-    arena.set(x, y);
+    //arena.set(x, y);
 }
 
 fn spawn_snakes(
@@ -557,8 +565,7 @@ fn spawn_snake(
 }
 
 fn plan_rats(
-    berries: Query<Entity, With<Berry>>,
-    positions: Query<&Position, With<Berry>>,
+    berries: Query<(Entity, &Position), With<Berry>>,
     mut rats: Query<(&mut AI, &Position), With<Rat>>,
     mut arena: ResMut<Arena>,
     time: Res<Time>,
@@ -570,12 +577,24 @@ fn plan_rats(
         ai.plan_timer.reset();
 
         if ai.path.len() > 0 {
+            // Already moving toward something
             continue;
         }
-        // TODO just take the first berry for now
-        if let Some(berry) = berries.iter().next() {
-            ai.target = Some(Target::Entity(berry));
-        }
+        // Try to choose a random berry that's not too far away
+        let mut rng = thread_rng();
+        ai.target = if let Some((berry, _)) = berries
+            .iter()
+            .filter(|(_, p)| {
+                (position.x + position.y - p.x - p.y).abs() as usize <= MAX_PATH_LENGTH
+            })
+            .choose(&mut rng)
+        {
+            Some(Target::Entity(berry))
+        } else {
+            // No berries around
+            println!("No berries for rat to go after");
+            None
+        };
         println!("Rat position={:?}, target={:?}", position, ai.target);
 
         // FIXME: We randomly select a berry Entity and then immediately pick
@@ -583,7 +602,7 @@ fn plan_rats(
         // target the Berry, though, not its Position, so that if the Berry
         // is eaten by something else, the Rat stops (TODO).
         if let Some(goal) = match ai.target {
-            Some(Target::Entity(entity)) => Some(*positions.get(entity).unwrap()),
+            Some(Target::Entity(entity)) => Some(*berries.get(entity).unwrap().1),
             Some(Target::Position(position)) => Some(position),
             None => None,
         } {
@@ -749,9 +768,9 @@ fn move_rats(
                 ai.clear();
                 return;
             }
-            arena.unset(position.x, position.y);
+            //arena.unset(position.x, position.y);
             (position.x, position.y) = (next_position.x, next_position.y);
-            arena.set(position.x, position.y);
+            //arena.set(position.x, position.y);
         }
         ai.move_timer.reset();
     }
@@ -894,7 +913,7 @@ fn eat_berries(
     mongoose: Query<&Segmented, With<Mongoose>>,
     rats: Query<&Position, With<Rat>>,
     snakes: Query<(Entity, &Segmented), With<Snake>>,
-    query: Query<(Entity, &Position), With<Berry>>,
+    berries: Query<(Entity, &Position), With<Berry>>,
     mut writer: EventWriter<GrowEvent>,
 ) {
     let mongoose_position = mongoose
@@ -902,17 +921,17 @@ fn eat_berries(
         .expect("Mongoose entity missing")
         .head_position;
 
-    'berries: for (berry, berry_position) in &query {
+    'berries: for (berry, berry_position) in &berries {
         if mongoose_position == *berry_position {
             commands.entity(berry).despawn();
             scoreboard.berries_eaten_by_mongoose += 1;
             continue 'berries;
         }
-        for (entity, snake) in &snakes {
-            if snake.head_position == *berry_position {
+        for (snake, snake_segments) in &snakes {
+            if snake_segments.head_position == *berry_position {
                 commands.entity(berry).despawn();
                 scoreboard.berries_eaten_by_snakes += 1;
-                writer.send(GrowEvent { segmented: entity });
+                writer.send(GrowEvent { segmented: snake });
                 continue 'berries;
             }
         }
@@ -921,6 +940,36 @@ fn eat_berries(
                 commands.entity(berry).despawn();
                 scoreboard.berries_eaten_by_rats += 1;
                 continue 'berries;
+            }
+        }
+    }
+}
+
+fn eat_rats(
+    mut commands: Commands,
+    mut scoreboard: ResMut<Scoreboard>,
+    mongoose: Query<&Segmented, With<Mongoose>>,
+    snakes: Query<(Entity, &Segmented), With<Snake>>,
+    rats: Query<(Entity, &Position), With<Rat>>,
+    mut writer: EventWriter<GrowEvent>,
+) {
+    let mongoose_position = mongoose
+        .get_single()
+        .expect("Mongoose entity missing")
+        .head_position;
+
+    'rats: for (rat, rat_position) in &rats {
+        if mongoose_position == *rat_position {
+            commands.entity(rat).despawn();
+            scoreboard.rats_eaten_by_mongoose += 1;
+            continue 'rats;
+        }
+        for (snake, snake_segments) in &snakes {
+            if snake_segments.head_position == *rat_position {
+                commands.entity(rat).despawn();
+                scoreboard.rats_eaten_by_snakes += 1;
+                writer.send(GrowEvent { segmented: snake });
+                continue 'rats;
             }
         }
     }
@@ -1001,7 +1050,10 @@ fn spawn_scoreboard(mut commands: Commands) {
 
 fn update_scoreboard(scoreboard: Res<Scoreboard>, mut query: Query<&mut Text, With<ScoreboardUI>>) {
     let mut text = query.single_mut();
-    text.sections[1].value = scoreboard.berries_eaten_by_mongoose.to_string();
+    text.sections[1].value = (scoreboard.berries_eaten_by_mongoose
+        + scoreboard.rats_eaten_by_mongoose
+        + scoreboard.snakes_killed)
+        .to_string();
 }
 
 fn main() {
@@ -1058,6 +1110,7 @@ fn main() {
                 move_snakes,
                 move_mongoose,
                 eat_berries,
+                eat_rats,
                 grow_snakes,
                 set_segment_sprites,
                 spawn_berries,
