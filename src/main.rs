@@ -49,6 +49,14 @@ const RAT_PLANNING_PERIOD: f32 = 5.0;
 
 const SNAKE_MOVEMENT_PERIOD: f32 = 0.5; // How often snakes move
 const SNAKE_PLANNING_PERIOD: f32 = 3.0; // How often snakes replan their goal position
+
+const RAT_BERRY_PREFERENCE: u32 = 4; // Likelihood a rat will choose to chase a berry
+const RAT_WANDER_PREFERENCE: u32 = 3; // Likelihood a rat will choose to go to a random empty location
+
+const SNAKE_RAT_PREFERENCE: u32 = 5; // Likelihood a snake will choose to chase a rat
+const SNAKE_BERRY_PREFERENCE: u32 = 2; // Likelihood a snake will choose to chase a berry
+const SNAKE_WANDER_PREFERENCE: u32 = 2; // Likelihood a snake will choose to go to a random empty location
+
 const MAX_PATH_LENGTH: usize = 8; // Necessary to keep this modest, otherwise all_simple_paths takes forever
 
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -384,7 +392,7 @@ fn spawn_mongoose(
 
 fn spawn_rats(
     mut commands: Commands,
-    mut arena: ResMut<Arena>,
+    arena: ResMut<Arena>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
     time: Res<Time>,
@@ -580,27 +588,20 @@ fn plan_rats(
             // Already moving toward something
             continue;
         }
-        // Try to choose a random berry that's not too far away
+
         let mut rng = thread_rng();
-        ai.target = if let Some((berry, _)) = berries
-            .iter()
-            .filter(|(_, p)| {
-                (position.x + position.y - p.x - p.y).abs() as usize <= MAX_PATH_LENGTH
-            })
-            .choose(&mut rng)
-        {
-            Some(Target::Entity(berry))
+        let roll = rng.gen_range(0..10);
+        ai.target = if roll <= RAT_BERRY_PREFERENCE {
+            choose_random_entity(&berries, &position)
+        } else if roll < RAT_WANDER_PREFERENCE + RAT_BERRY_PREFERENCE {
+            // Choose a random location as the target
+            choose_random_unocc(&position, &arena)
         } else {
-            // No berries around
-            println!("No berries for rat to go after");
             None
         };
+
         println!("Rat position={:?}, target={:?}", position, ai.target);
 
-        // FIXME: We randomly select a berry Entity and then immediately pick
-        // out the associated Position, which seems silly. We want the rat to
-        // target the Berry, though, not its Position, so that if the Berry
-        // is eaten by something else, the Rat stops (TODO).
         if let Some(goal) = match ai.target {
             Some(Target::Entity(entity)) => Some(*berries.get(entity).unwrap().1),
             Some(Target::Position(position)) => Some(position),
@@ -632,26 +633,19 @@ fn plan_snakes(
             continue;
         }
 
-        // Choose a random location as the target
-        // Limit the distance to reflect MAX_PATH_LENGTH
-        let x_min = max(0, snake.head_position.x - (MAX_PATH_LENGTH as i32) / 2);
-        let y_min = max(0, snake.head_position.y - (MAX_PATH_LENGTH as i32) / 2);
-        let x_max = min(
-            ARENA_WIDTH - 1,
-            snake.head_position.x + (MAX_PATH_LENGTH as i32) / 2,
-        );
-        let y_max = min(
-            ARENA_HEIGHT - 1,
-            snake.head_position.y + (MAX_PATH_LENGTH as i32) / 2,
-        );
         let mut rng = thread_rng();
-        let (x, y) = loop {
-            let (x, y) = (rng.gen_range(x_min..=x_max), rng.gen_range(y_min..=y_max));
-            if !arena.isset(x, y) {
-                break (x, y);
-            }
+        let roll = rng.gen_range(0..10);
+        ai.target = if roll <= SNAKE_RAT_PREFERENCE {
+            choose_random_entity(&rats, &snake.head_position)
+        } else if roll <= SNAKE_BERRY_PREFERENCE + SNAKE_RAT_PREFERENCE {
+            choose_random_entity(&berries, &snake.head_position)
+        } else if roll < SNAKE_WANDER_PREFERENCE + SNAKE_BERRY_PREFERENCE + SNAKE_RAT_PREFERENCE {
+            // Choose a random location as the target
+            choose_random_unocc(&snake.head_position, &arena)
+        } else {
+            None
         };
-        ai.target = Some(Target::Position(Position { x, y }));
+
         println!(
             "Head position={:?}, target={:?}",
             snake.head_position, ai.target
@@ -664,6 +658,44 @@ fn plan_snakes(
             ai.clear();
         }
     }
+}
+
+fn choose_random_entity<T: Component>(
+    query: &Query<(Entity, &Position), With<T>>,
+    position: &Position,
+) -> Option<Target> {
+    // Try to choose a random berry that's not too far away
+    let mut rng = thread_rng();
+    if let Some((entity, _)) = query
+        .iter()
+        .filter(|(_, p)| (position.x + position.y - p.x - p.y).abs() as usize <= MAX_PATH_LENGTH)
+        .choose(&mut rng)
+    {
+        Some(Target::Entity(entity))
+    } else {
+        None
+    }
+}
+
+fn choose_random_unocc(position: &Position, arena: &ResMut<Arena>) -> Option<Target> {
+    // Limit the distance to reflect MAX_PATH_LENGTH
+    let x_min = max(0, position.x - (MAX_PATH_LENGTH as i32) / 2);
+    let y_min = max(0, position.y - (MAX_PATH_LENGTH as i32) / 2);
+    let x_max = min(ARENA_WIDTH - 1, position.x + (MAX_PATH_LENGTH as i32) / 2);
+    let y_max = min(ARENA_HEIGHT - 1, position.y + (MAX_PATH_LENGTH as i32) / 2);
+    let mut rng = thread_rng();
+    let mut attempts = 10;
+    let (x, y) = loop {
+        let (x, y) = (rng.gen_range(x_min..=x_max), rng.gen_range(y_min..=y_max));
+        if !arena.isset(x, y) {
+            break (x, y);
+        }
+        attempts += 1;
+        if attempts >= 10 {
+            return None;
+        }
+    };
+    Some(Target::Position(Position { x, y }))
 }
 
 fn move_mongoose(
@@ -751,7 +783,7 @@ fn move_mongoose(
 
 fn move_rats(
     mut rats: Query<(&mut AI, &mut Position), With<Rat>>,
-    mut arena: ResMut<Arena>,
+    arena: ResMut<Arena>,
     time: Res<Time>,
 ) {
     for (mut ai, mut position) in &mut rats {
