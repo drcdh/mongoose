@@ -104,7 +104,7 @@ struct Scoreboard {
     berries_eaten_by_snakes: usize,
     rats_eaten_by_mongoose: usize,
     rats_eaten_by_snakes: usize,
-    rats_escaped: usize,
+    _rats_escaped: usize,
     snakes_killed: usize,
 }
 
@@ -128,31 +128,39 @@ struct GrowEvent {
     segmented: Entity,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Occupancy {
+    Berry(Entity),
+    Mongoose(Entity),
+    Rat(Entity),
+    Snake(Entity),
+}
+
 #[derive(Resource)]
 struct Arena {
     graph: Graph<(), (), Undirected>,
-    nodes: BiMap<(usize, usize), NodeIndex>,
-    occ: Array2D<bool>,
+    nodes: BiMap<(i32, i32), NodeIndex>,
+    occ: Array2D<Option<Occupancy>>,
 }
 impl Arena {
     fn new() -> Arena {
         let mut graph = Graph::<(), (), Undirected>::new_undirected();
-        let mut nodes = BiMap::new();
-        for x in 0..ARENA_WIDTH as usize {
-            for y in 0..ARENA_HEIGHT as usize {
+        let mut nodes = BiMap::<(i32, i32), NodeIndex>::new();
+        for x in 0..ARENA_WIDTH {
+            for y in 0..ARENA_HEIGHT {
                 nodes.insert((x, y), graph.add_node(()));
             }
         }
-        for i in 0..ARENA_WIDTH as usize {
-            for j in 0..ARENA_HEIGHT as usize {
-                if i < (ARENA_WIDTH - 1) as usize {
+        for i in 0..ARENA_WIDTH {
+            for j in 0..ARENA_HEIGHT {
+                if i < (ARENA_WIDTH - 1) {
                     graph.add_edge(
                         *nodes.get_by_left(&(i, j)).unwrap(),
                         *nodes.get_by_left(&(i + 1, j)).unwrap(),
                         (),
                     );
                 }
-                if j < (ARENA_HEIGHT - 1) as usize {
+                if j < (ARENA_HEIGHT - 1) {
                     graph.add_edge(
                         *nodes.get_by_left(&(i, j)).unwrap(),
                         *nodes.get_by_left(&(i, j + 1)).unwrap(),
@@ -161,63 +169,87 @@ impl Arena {
                 }
             }
         }
-        let occ = Array2D::filled_with(false, ARENA_WIDTH as usize, ARENA_HEIGHT as usize);
+        let occ = Array2D::filled_with(None, ARENA_WIDTH as usize, ARENA_HEIGHT as usize);
         Arena { graph, nodes, occ }
     }
-    fn add_edges_with(&mut self, x: usize, y: usize) {
+    fn add_edges_with(&mut self, x: i32, y: i32) {
         let n = *self.nodes.get_by_left(&(x, y)).unwrap();
-        if x < (ARENA_WIDTH - 1) as usize && !self.occ[(x + 1, y)] {
+        if x < (ARENA_WIDTH - 1) && !self.isset(x + 1, y) {
             self.graph
                 .add_edge(n, *self.nodes.get_by_left(&(x + 1, y)).unwrap(), ());
         }
-        if y < (ARENA_HEIGHT - 1) as usize && !self.occ[(x, y + 1)] {
+        if y < (ARENA_HEIGHT - 1) && !self.isset(x, y + 1) {
             self.graph
                 .add_edge(n, *self.nodes.get_by_left(&(x, y + 1)).unwrap(), ());
         }
-        if x > 0 && !self.occ[(x - 1, y)] {
+        if x > 0 && !self.isset(x - 1, y) {
             self.graph
                 .add_edge(n, *self.nodes.get_by_left(&(x - 1, y)).unwrap(), ());
         }
-        if y > 0 && !self.occ[(x, y - 1)] {
+        if y > 0 && !self.isset(x, y - 1) {
             self.graph
                 .add_edge(n, *self.nodes.get_by_left(&(x, y - 1)).unwrap(), ());
         }
     }
-    fn remove_edges_with(&mut self, x: usize, y: usize) {
+    fn remove_edges_with(&mut self, x: i32, y: i32) {
         let n = *self.nodes.get_by_left(&(x, y)).unwrap();
         let edges = self.graph.edges(n);
         let ids = edges.map(|er| er.id()).collect::<Vec<_>>();
         self.graph.retain_edges(|_, ei| !ids.contains(&ei))
     }
-    fn set(&mut self, x: i32, y: i32) {
+    fn set(&mut self, x: i32, y: i32, occ: Occupancy) {
         if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
             // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
             return;
         }
-        if self.occ[(x as usize, y as usize)] {
-            panic!("Setting arena location ({} {}) that was already set", x, y);
+        if self.isset(x, y) {
+            panic!(
+                "Setting arena location ({} {}) that was already set to {:?}",
+                x,
+                y,
+                self.occ[(x as usize, y as usize)]
+            );
         }
-        self.occ[(x as usize, y as usize)] = true;
-        self.remove_edges_with(x as usize, y as usize);
+        self.occ[(x as usize, y as usize)] = Some(occ);
+        self.remove_edges_with(x, y);
     }
-    fn unset(&mut self, x: i32, y: i32) {
+    fn unset(&mut self, x: i32, y: i32) -> Option<Occupancy> {
         if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
             // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
-            return;
+            return None;
         }
-        if !self.occ[(x as usize, y as usize)] {
+        if self.occ[(x as usize, y as usize)].is_none() {
             panic!(
                 "Unsetting arena location ({} {}) that was already unset",
                 x, y
             );
         }
-        self.occ[(x as usize, y as usize)] = false;
-        self.add_edges_with(x as usize, y as usize);
+        let occ = self.occ[(x as usize, y as usize)];
+        self.occ[(x as usize, y as usize)] = None;
+        self.add_edges_with(x, y);
+        return occ;
+    }
+    fn unset_maybe(&mut self, x: i32, y: i32) -> Option<Occupancy> {
+        if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
+            // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
+            return None;
+        }
+        let occ = self.occ[(x as usize, y as usize)];
+        self.occ[(x as usize, y as usize)] = None;
+        self.add_edges_with(x, y);
+        return occ;
     }
     fn isset(&self, x: i32, y: i32) -> bool {
         if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
             // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
             return false;
+        }
+        self.occ[(x as usize, y as usize)].is_some()
+    }
+    fn occ(&self, x: i32, y: i32) -> Option<Occupancy> {
+        if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
+            // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
+            return None;
         }
         self.occ[(x as usize, y as usize)]
     }
@@ -234,30 +266,24 @@ struct AI {
 impl AI {
     fn plan_path(&mut self, p: &Position, goal: &Position, arena: &mut Arena) {
         println!("Planning to go from {:?} to {:?}", p, goal);
-        let reset = if arena.isset(p.x, p.y) {
-            // If the thing occupies space, temporarily unset the start position for pathplanning
-            arena.unset(p.x, p.y);
-            true
-        } else {
-            false
-        };
+        // If the things occupy spaces, temporarily unset the positions for pathplanning
+        let start_occ = arena.unset(p.x, p.y);
+        let goal_occ = arena.unset_maybe(goal.x, goal.y);
         let paths = all_simple_paths::<Vec<_>, _>(
             &arena.graph,
-            *arena
-                .nodes
-                .get_by_left(&(p.x as usize, p.y as usize))
-                .unwrap(),
-            *arena
-                .nodes
-                .get_by_left(&(goal.x as usize, goal.y as usize))
-                .unwrap(),
+            *arena.nodes.get_by_left(&(p.x, p.y)).unwrap(),
+            *arena.nodes.get_by_left(&(goal.x, goal.y)).unwrap(),
             0,
             Some(MAX_PATH_LENGTH),
         )
         .collect::<Vec<_>>();
 
-        if reset {
-            arena.set(p.x, p.y); // Undo the temporary unset
+        // Undo the temporary unsets
+        if start_occ.is_some() {
+            arena.set(p.x, p.y, start_occ.unwrap());
+        }
+        if goal_occ.is_some() {
+            arena.set(goal.x, goal.y, goal_occ.unwrap());
         }
 
         if let Some(path) = paths.first() {
@@ -282,7 +308,7 @@ impl AI {
 
 fn spawn_berries(
     mut commands: Commands,
-    arena: ResMut<Arena>,
+    mut arena: ResMut<Arena>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
     time: Res<Time>,
@@ -307,18 +333,21 @@ fn spawn_berries(
         None,
         None,
     ));
-    commands.spawn((
-        SpriteBundle {
-            texture: texture.clone(),
-            ..default()
-        },
-        TextureAtlas {
-            layout: texture_atlas_layout.clone(),
-            ..default()
-        },
-        Berry,
-        Position { x, y },
-    ));
+    let berry = commands
+        .spawn((
+            SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            },
+            TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                ..default()
+            },
+            Berry,
+            Position { x, y },
+        ))
+        .id();
+    arena.set(x, y, Occupancy::Berry(berry));
 }
 
 fn spawn_mongoose(
@@ -338,57 +367,54 @@ fn spawn_mongoose(
     let (x, y) = (ARENA_WIDTH / 2, ARENA_HEIGHT / 2);
     let head_position = Position { x, y };
     let mut segments: Vec<Entity> = Vec::new();
-    segments.push(
-        commands
-            .spawn((
-                SpriteBundle {
-                    texture: texture.clone(),
-                    ..default()
-                },
-                TextureAtlas {
-                    layout: texture_atlas_layout.clone(),
-                    ..default()
-                },
-                Position { x, y },
-                Mongoose,
-            ))
-            .id(),
-    );
-    arena.set(x, y);
-    segments.push(
-        commands
-            .spawn((
-                SpriteBundle {
-                    texture: texture.clone(),
-                    ..default()
-                },
-                TextureAtlas {
-                    layout: texture_atlas_layout.clone(),
-                    index: BODY + CCW_LEFT,
-                },
-                Position { x: x + 1, y },
-                Mongoose,
-            ))
-            .id(),
-    );
-    arena.set(x + 1, y);
-    segments.push(
-        commands
-            .spawn((
-                SpriteBundle {
-                    texture: texture.clone(),
-                    ..default()
-                },
-                TextureAtlas {
-                    layout: texture_atlas_layout.clone(),
-                    index: TAIL + UP,
-                },
-                Position { x: x + 1, y: y - 1 },
-                Mongoose,
-            ))
-            .id(),
-    );
-    arena.set(x + 1, y - 1);
+    let segment = commands
+        .spawn((
+            SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            },
+            TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                ..default()
+            },
+            Position { x, y },
+            Mongoose,
+        ))
+        .id();
+    arena.set(x, y, Occupancy::Mongoose(segment));
+    segments.push(segment);
+    let segment = commands
+        .spawn((
+            SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            },
+            TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                index: BODY + CCW_LEFT,
+            },
+            Position { x: x + 1, y },
+            Mongoose,
+        ))
+        .id();
+    arena.set(x + 1, y, Occupancy::Mongoose(segment));
+    segments.push(segment);
+    let segment = commands
+        .spawn((
+            SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            },
+            TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                index: TAIL + UP,
+            },
+            Position { x: x + 1, y: y - 1 },
+            Mongoose,
+        ))
+        .id();
+    arena.set(x + 1, y - 1, Occupancy::Mongoose(segment));
+    segments.push(segment);
     commands.spawn((
         Segmented {
             head_position,
@@ -400,7 +426,7 @@ fn spawn_mongoose(
 
 fn spawn_rats(
     mut commands: Commands,
-    arena: ResMut<Arena>,
+    mut arena: ResMut<Arena>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
     time: Res<Time>,
@@ -425,24 +451,26 @@ fn spawn_rats(
         None,
         None,
     ));
-    commands.spawn((
-        AI {
-            move_timer: Timer::from_seconds(RAT_MOVEMENT_PERIOD, TimerMode::Once),
-            plan_timer: Timer::from_seconds(RAT_PLANNING_PERIOD, TimerMode::Once),
-            ..default()
-        },
-        SpriteBundle {
-            texture: texture.clone(),
-            ..default()
-        },
-        TextureAtlas {
-            layout: texture_atlas_layout.clone(),
-            ..default()
-        },
-        Rat,
-        Position { x, y },
-    ));
-    //arena.set(x, y);
+    let rat = commands
+        .spawn((
+            AI {
+                move_timer: Timer::from_seconds(RAT_MOVEMENT_PERIOD, TimerMode::Once),
+                plan_timer: Timer::from_seconds(RAT_PLANNING_PERIOD, TimerMode::Once),
+                ..default()
+            },
+            SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            },
+            TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                ..default()
+            },
+            Rat,
+            Position { x, y },
+        ))
+        .id();
+    arena.set(x, y, Occupancy::Rat(rat));
 }
 
 fn spawn_snakes(
@@ -508,48 +536,26 @@ fn spawn_snake(
     ));
     let head_position = Position { x, y };
     let mut segments: Vec<Entity> = Vec::new();
-    segments.push(
-        commands
-            .spawn((
-                SpriteBundle {
-                    texture: texture.clone(),
-                    ..default()
-                },
-                TextureAtlas {
-                    layout: texture_atlas_layout.clone(),
-                    ..default()
-                },
-                Position { x, y },
-                Snake,
-            ))
-            .id(),
-    );
-    arena.set(x, y);
+    let segment = commands
+        .spawn((
+            SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            },
+            TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                ..default()
+            },
+            Position { x, y },
+            Snake,
+        ))
+        .id();
+    arena.set(x, y, Occupancy::Snake(segment));
+    segments.push(segment);
     for _ in 1..=n {
         x += delta_x;
         y += delta_y;
-        segments.push(
-            commands
-                .spawn((
-                    SpriteBundle {
-                        texture: texture.clone(),
-                        ..default()
-                    },
-                    TextureAtlas {
-                        layout: texture_atlas_layout.clone(),
-                        ..default()
-                    },
-                    Position { x, y },
-                    Snake,
-                ))
-                .id(),
-        );
-        arena.set(x, y);
-    }
-    x += delta_x;
-    y += delta_y;
-    segments.push(
-        commands
+        let segment = commands
             .spawn((
                 SpriteBundle {
                     texture: texture.clone(),
@@ -562,9 +568,28 @@ fn spawn_snake(
                 Position { x, y },
                 Snake,
             ))
-            .id(),
-    );
-    arena.set(x, y);
+            .id();
+        arena.set(x, y, Occupancy::Snake(segment));
+        segments.push(segment);
+    }
+    x += delta_x;
+    y += delta_y;
+    let segment = commands
+        .spawn((
+            SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            },
+            TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                ..default()
+            },
+            Position { x, y },
+            Snake,
+        ))
+        .id();
+    arena.set(x, y, Occupancy::Snake(segment));
+    segments.push(segment);
 
     println!("Spawned segments {:?}", segments);
 
@@ -721,8 +746,10 @@ fn choose_random_unocc(position: &Position, arena: &ResMut<Arena>) -> Option<Tar
 
 fn move_mongoose(
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut mongoose: Query<&mut Segmented, With<Mongoose>>,
-    mut positions: Query<&mut Position, With<Mongoose>>,
+    mut commands: Commands,
+    mut scoreboard: ResMut<Scoreboard>,
+    mut mongoose: Query<(Entity, &mut Segmented), With<Mongoose>>,
+    positions: Query<&mut Position, With<Mongoose>>,
     mut arena: ResMut<Arena>,
     mut input_timer: ResMut<InputTimer>,
     time: Res<Time>,
@@ -768,43 +795,75 @@ fn move_mongoose(
         panic!();
     };
 
-    let mut mongoose = mongoose.get_single_mut().expect("Mongoose entity missing");
+    let (mongoose, segments) = mongoose.get_single_mut().expect("Mongoose entity missing");
 
-    if mongoose.head_position.x == 0 && next_direction == LEFT {
+    if segments.head_position.x == 0 && next_direction == LEFT {
         return;
     }
-    if mongoose.head_position.y == ARENA_HEIGHT - 1 && next_direction == UP {
+    if segments.head_position.y == ARENA_HEIGHT - 1 && next_direction == UP {
         return;
     }
-    if mongoose.head_position.x == ARENA_WIDTH - 1 && next_direction == RIGHT {
+    if segments.head_position.x == ARENA_WIDTH - 1 && next_direction == RIGHT {
         return;
     }
-    if mongoose.head_position.y == 0 && next_direction == DOWN {
+    if segments.head_position.y == 0 && next_direction == DOWN {
         return;
     }
-    if arena.isset(
-        mongoose.head_position.x + delta_x,
-        mongoose.head_position.y + delta_y,
-    ) {
-        // Space is occupied
-        return;
+    let (x, y) = (
+        segments.head_position.x + delta_x,
+        segments.head_position.y + delta_y,
+    );
+    match arena.occ(x, y) {
+        None => move_mongoose_segments(arena, mongoose, segments, positions, delta_x, delta_y),
+        Some(Occupancy::Berry(berry)) => {
+            arena.unset(x, y);
+            move_mongoose_segments(arena, mongoose, segments, positions, delta_x, delta_y);
+            commands.entity(berry).despawn();
+            scoreboard.berries_eaten_by_mongoose += 1;
+            println!("Berry {:?} eaten by mongoose", berry)
+        }
+        Some(Occupancy::Rat(rat)) => {
+            arena.unset(x, y);
+            move_mongoose_segments(arena, mongoose, segments, positions, delta_x, delta_y);
+            commands.entity(rat).despawn();
+            scoreboard.rats_eaten_by_mongoose += 1;
+            println!("Rat {:?} eaten by mongoose", rat)
+        }
+        Some(Occupancy::Snake(_snake)) => (), // TODO: Mongoose attacking Snakes is unimplemented
+        Some(Occupancy::Mongoose(_)) => (),
     }
-    mongoose.head_position.x += delta_x;
-    mongoose.head_position.y += delta_y;
-    arena.set(mongoose.head_position.x, mongoose.head_position.y);
-    let mut gap_position = mongoose.head_position.clone();
-    for s in mongoose.segments.iter() {
+    input_timer.0.reset();
+}
+
+fn move_mongoose_segments(
+    mut arena: ResMut<Arena>,
+    entity: Entity,
+    mut segmented: Mut<Segmented>,
+    mut positions: Query<&mut Position, With<Mongoose>>,
+    delta_x: i32,
+    delta_y: i32,
+) {
+    segmented.head_position.x += delta_x;
+    segmented.head_position.y += delta_y;
+    arena.set(
+        segmented.head_position.x,
+        segmented.head_position.y,
+        Occupancy::Mongoose(entity),
+    );
+    let mut gap_position = segmented.head_position.clone();
+    for s in segmented.segments.iter() {
         let mut position = positions.get_mut(*s).unwrap();
         (position.x, gap_position.x) = (gap_position.x, position.x);
         (position.y, gap_position.y) = (gap_position.y, position.y);
     }
     arena.unset(gap_position.x, gap_position.y);
-    input_timer.0.reset();
 }
 
 fn move_rats(
+    mut commands: Commands,
+    mut scoreboard: ResMut<Scoreboard>,
     mut rats: Query<(Entity, &mut AI, &mut Position), With<Rat>>,
-    arena: ResMut<Arena>,
+    mut arena: ResMut<Arena>,
     time: Res<Time>,
 ) {
     for (rat, mut ai, mut position) in &mut rats {
@@ -812,62 +871,113 @@ fn move_rats(
             continue;
         }
         if let Some(next_position) = ai.path.pop_front() {
-            if arena.isset(next_position.x, next_position.y) {
-                // Space is occupied or outside the arena
-                println!(
-                    "Rat {:?}, position ({}, {}) is blocked",
-                    rat, next_position.x, next_position.y
-                );
-                ai.clear();
-                return;
+            match arena.occ(next_position.x, next_position.y) {
+                None => {
+                    arena.unset(position.x, position.y);
+                    (position.x, position.y) = (next_position.x, next_position.y);
+                    arena.set(position.x, position.y, Occupancy::Rat(rat));
+                }
+                Some(Occupancy::Berry(berry)) => {
+                    arena.unset(position.x, position.y);
+                    arena.unset(next_position.x, next_position.y);
+                    (position.x, position.y) = (next_position.x, next_position.y);
+                    arena.set(position.x, position.y, Occupancy::Rat(rat));
+                    commands.entity(berry).despawn();
+                    scoreboard.berries_eaten_by_rats += 1;
+                    println!("Berry {:?} eaten by rat", berry)
+                }
+                Some(_) => {
+                    println!(
+                        "Rat {:?}, position ({}, {}) is blocked",
+                        rat, next_position.x, next_position.y
+                    );
+                    ai.clear();
+                }
             }
-            //arena.unset(position.x, position.y);
-            (position.x, position.y) = (next_position.x, next_position.y);
-            //arena.set(position.x, position.y);
+            ai.move_timer.reset();
         }
-        ai.move_timer.reset();
     }
 }
 
 fn move_snakes(
+    mut commands: Commands,
+    mut scoreboard: ResMut<Scoreboard>,
     mut snakes: Query<(Entity, &mut AI, &mut Segmented), With<Snake>>,
     mut positions: Query<&mut Position, With<Snake>>,
     mut arena: ResMut<Arena>,
     time: Res<Time>,
 ) {
-    for (snake, mut ai, mut segments) in &mut snakes {
+    for (snake, mut ai, segments) in &mut snakes {
         if !ai.move_timer.tick(time.delta()).finished() {
             continue;
         }
         if let Some(next_position) = ai.path.pop_front() {
-            if arena.isset(next_position.x, next_position.y) {
-                // Space is occupied or outside the arena
-                println!(
-                    "Snake {:?}, position ({}, {}) is blocked",
-                    snake, next_position.x, next_position.y
-                );
-                ai.clear();
-                return;
-            }
-            segments.head_position.x = next_position.x;
-            segments.head_position.y = next_position.y;
-            arena.set(segments.head_position.x, segments.head_position.y);
-            let mut gap_position = segments.head_position.clone();
-            let mut grown = false;
-            for s in segments.segments.iter() {
-                let mut position = positions.get_mut(*s).unwrap();
-                (position.x, gap_position.x) = (gap_position.x, position.x);
-                (position.y, gap_position.y) = (gap_position.y, position.y);
-                if position.x == gap_position.x && position.y == gap_position.y {
-                    grown = true;
+            let (x, y) = (next_position.x, next_position.y);
+            match arena.occ(x, y) {
+                None => {
+                    move_snake_segments(snake, next_position, segments, &mut arena, &mut positions)
+                }
+                Some(Occupancy::Berry(berry)) => {
+                    arena.unset(x, y);
+                    move_snake_segments(snake, next_position, segments, &mut arena, &mut positions);
+                    commands.entity(berry).despawn();
+                    scoreboard.berries_eaten_by_snakes += 1;
+                    println!("Berry {:?} eaten by snake", berry)
+                }
+                Some(Occupancy::Rat(rat)) => {
+                    arena.unset(x, y);
+                    move_snake_segments(snake, next_position, segments, &mut arena, &mut positions);
+                    commands.entity(rat).despawn();
+                    scoreboard.rats_eaten_by_snakes += 1;
+                    println!("Rat {:?} eaten by snake", rat)
+                }
+                Some(Occupancy::Mongoose(_)) => {
+                    // Snakes attacking Mongoose is unimplemented
+                    println!(
+                        "Snake {:?}, position ({}, {}) is blocked by mongoose",
+                        snake, next_position.x, next_position.y
+                    );
+                    ai.clear();
+                }
+                Some(Occupancy::Snake(other_snake)) => {
+                    println!(
+                        "Snake {:?}, position ({}, {}) is blocked by snake {:?}",
+                        snake, next_position.x, next_position.y, other_snake
+                    );
+                    ai.clear();
                 }
             }
-            if !grown {
-                arena.unset(gap_position.x, gap_position.y);
-            }
         }
-
         ai.move_timer.reset();
+    }
+}
+
+fn move_snake_segments(
+    snake: Entity,
+    next_position: Position,
+    mut segments: Mut<Segmented>,
+    arena: &mut ResMut<Arena>,
+    positions: &mut Query<&mut Position, With<Snake>>,
+) {
+    segments.head_position.x = next_position.x;
+    segments.head_position.y = next_position.y;
+    arena.set(
+        segments.head_position.x,
+        segments.head_position.y,
+        Occupancy::Snake(snake),
+    );
+    let mut gap_position = segments.head_position.clone();
+    let mut grown = false;
+    for s in segments.segments.iter() {
+        let mut position = positions.get_mut(*s).unwrap();
+        (position.x, gap_position.x) = (gap_position.x, position.x);
+        (position.y, gap_position.y) = (gap_position.y, position.y);
+        if position.x == gap_position.x && position.y == gap_position.y {
+            grown = true;
+        }
+    }
+    if !grown {
+        arena.unset(gap_position.x, gap_position.y);
     }
 }
 
@@ -957,91 +1067,6 @@ fn set_segment_sprites(
                 ta_b.index = TAIL + direction;
             } else {
                 ta_b.index = direction;
-            }
-        }
-    }
-}
-
-fn eat_berries(
-    mut commands: Commands,
-    mut scoreboard: ResMut<Scoreboard>,
-    mongoose: Query<&Segmented, With<Mongoose>>,
-    rats: Query<(Entity, &Position), With<Rat>>,
-    snakes: Query<(Entity, &Segmented), With<Snake>>,
-    berries: Query<(Entity, &Position), With<Berry>>,
-    mut writer: EventWriter<GrowEvent>,
-) {
-    let mongoose_position = mongoose
-        .get_single()
-        .expect("Mongoose entity missing")
-        .head_position;
-
-    'berries: for (berry, berry_position) in &berries {
-        if mongoose_position == *berry_position {
-            commands.entity(berry).despawn();
-            scoreboard.berries_eaten_by_mongoose += 1;
-            println!(
-                "Berry {:?} at {:?} eaten by mongoose",
-                berry, berry_position
-            );
-            continue 'berries;
-        }
-        for (snake, snake_segments) in &snakes {
-            if snake_segments.head_position == *berry_position {
-                commands.entity(berry).despawn();
-                scoreboard.berries_eaten_by_snakes += 1;
-                writer.send(GrowEvent { segmented: snake });
-                println!(
-                    "Berry {:?} at {:?} eaten by snake {:?}",
-                    berry, berry_position, snake
-                );
-                continue 'berries;
-            }
-        }
-        for (rat, position) in &rats {
-            if *position == *berry_position {
-                commands.entity(berry).despawn();
-                scoreboard.berries_eaten_by_rats += 1;
-                println!(
-                    "Berry {:?} at {:?} eaten by rat {:?}",
-                    berry, berry_position, rat
-                );
-                continue 'berries;
-            }
-        }
-    }
-}
-
-fn eat_rats(
-    mut commands: Commands,
-    mut scoreboard: ResMut<Scoreboard>,
-    mongoose: Query<&Segmented, With<Mongoose>>,
-    snakes: Query<(Entity, &Segmented), With<Snake>>,
-    rats: Query<(Entity, &Position), With<Rat>>,
-    mut writer: EventWriter<GrowEvent>,
-) {
-    let mongoose_position = mongoose
-        .get_single()
-        .expect("Mongoose entity missing")
-        .head_position;
-
-    'rats: for (rat, rat_position) in &rats {
-        if mongoose_position == *rat_position {
-            commands.entity(rat).despawn();
-            scoreboard.rats_eaten_by_mongoose += 1;
-            println!("Rat {:?} at {:?} eaten by mongoose", rat, rat_position);
-            continue 'rats;
-        }
-        for (snake, snake_segments) in &snakes {
-            if snake_segments.head_position == *rat_position {
-                commands.entity(rat).despawn();
-                scoreboard.rats_eaten_by_snakes += 1;
-                writer.send(GrowEvent { segmented: snake });
-                println!(
-                    "Rat {:?} at {:?} eaten by snake {:?}",
-                    rat, rat_position, snake
-                );
-                continue 'rats;
             }
         }
     }
@@ -1195,8 +1220,6 @@ fn main() {
                 plan_snakes,
                 move_snakes,
                 move_mongoose,
-                eat_berries,
-                eat_rats,
                 grow_snakes,
                 set_segment_sprites,
                 spawn_berries,
