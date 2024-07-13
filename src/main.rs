@@ -44,11 +44,19 @@ const CCW_UP: usize = 9;
 const CCW_RIGHT: usize = 10;
 const CCW_DOWN: usize = 11;
 
-const RAT_MOVEMENT_PERIOD: f32 = 0.4;
-const RAT_PLANNING_PERIOD: f32 = 5.0;
+const INPUT_PERIOD: f32 = 0.2;
 
-const SNAKE_MOVEMENT_PERIOD: f32 = 0.5; // How often snakes move
-const SNAKE_PLANNING_PERIOD: f32 = 3.0; // How often snakes replan their goal position
+const DEBUG_SPEEDUP: f32 = 1.0;
+
+const BERRY_SPAWN_PERIOD: f32 = 3.0 / DEBUG_SPEEDUP;
+const RAT_SPAWN_PERIOD: f32 = 5.0 / DEBUG_SPEEDUP;
+const SNAKE_SPAWN_PERIOD: f32 = 5.0 / DEBUG_SPEEDUP;
+
+const RAT_MOVEMENT_PERIOD: f32 = 0.4 / DEBUG_SPEEDUP;
+const RAT_PLANNING_PERIOD: f32 = 5.0 / DEBUG_SPEEDUP;
+
+const SNAKE_MOVEMENT_PERIOD: f32 = 0.3 / DEBUG_SPEEDUP; // How often snakes move
+const SNAKE_PLANNING_PERIOD: f32 = 3.0 / DEBUG_SPEEDUP; // How often snakes replan their goal position
 
 const RAT_BERRY_PREFERENCE: u32 = 4; // Likelihood a rat will choose to chase a berry
 const RAT_WANDER_PREFERENCE: u32 = 3; // Likelihood a rat will choose to go to a random empty location
@@ -558,27 +566,32 @@ fn spawn_snake(
     );
     arena.set(x, y);
 
-    commands.spawn((
-        AI {
-            move_timer: Timer::from_seconds(SNAKE_MOVEMENT_PERIOD, TimerMode::Once),
-            plan_timer: Timer::from_seconds(SNAKE_PLANNING_PERIOD, TimerMode::Once),
-            ..default()
-        },
-        Segmented {
-            head_position,
-            segments,
-        },
-        Snake,
-    ));
+    println!("Spawned segments {:?}", segments);
+
+    let snake = commands
+        .spawn((
+            AI {
+                move_timer: Timer::from_seconds(SNAKE_MOVEMENT_PERIOD, TimerMode::Once),
+                plan_timer: Timer::from_seconds(SNAKE_PLANNING_PERIOD, TimerMode::Once),
+                ..default()
+            },
+            Segmented {
+                head_position,
+                segments,
+            },
+            Snake,
+        ))
+        .id();
+    println!("Snake {:?} spawned with segments", snake);
 }
 
 fn plan_rats(
     berries: Query<(Entity, &Position), With<Berry>>,
-    mut rats: Query<(&mut AI, &Position), With<Rat>>,
+    mut rats: Query<(Entity, &mut AI, &Position), With<Rat>>,
     mut arena: ResMut<Arena>,
     time: Res<Time>,
 ) {
-    for (mut ai, position) in &mut rats {
+    for (rat, mut ai, position) in &mut rats {
         if !ai.plan_timer.tick(time.delta()).finished() {
             continue;
         }
@@ -592,15 +605,20 @@ fn plan_rats(
         let mut rng = thread_rng();
         let roll = rng.gen_range(0..10);
         ai.target = if roll <= RAT_BERRY_PREFERENCE {
+            println!("Rat {:?} looking for a berry target", rat);
             choose_random_entity(&berries, &position)
         } else if roll < RAT_WANDER_PREFERENCE + RAT_BERRY_PREFERENCE {
             // Choose a random location as the target
+            println!("Rat {:?} looking for a random location", rat);
             choose_random_unocc(&position, &arena)
         } else {
             None
         };
 
-        println!("Rat position={:?}, target={:?}", position, ai.target);
+        println!(
+            "Rat {:?}, position={:?}, target={:?}",
+            rat, position, ai.target
+        );
 
         if let Some(goal) = match ai.target {
             Some(Target::Entity(entity)) => Some(*berries.get(entity).unwrap().1),
@@ -608,7 +626,7 @@ fn plan_rats(
             None => None,
         } {
             ai.plan_path(&position, &goal, &mut arena);
-            println!("{:?}", ai.path);
+            println!("Rat {:?}, path {:?}", rat, ai.path);
         } else {
             // Target disappeared
             ai.clear();
@@ -619,11 +637,11 @@ fn plan_rats(
 fn plan_snakes(
     berries: Query<(Entity, &Position), With<Berry>>,
     rats: Query<(Entity, &Position), With<Rat>>,
-    mut snakes: Query<(&mut AI, &Segmented), With<Snake>>,
+    mut snakes: Query<(Entity, &mut AI, &Segmented), With<Snake>>,
     mut arena: ResMut<Arena>,
     time: Res<Time>,
 ) {
-    for (mut ai, snake) in &mut snakes {
+    for (snake, mut ai, segments) in &mut snakes {
         if !ai.plan_timer.tick(time.delta()).finished() {
             continue;
         }
@@ -636,23 +654,26 @@ fn plan_snakes(
         let mut rng = thread_rng();
         let roll = rng.gen_range(0..10);
         ai.target = if roll <= SNAKE_RAT_PREFERENCE {
-            choose_random_entity(&rats, &snake.head_position)
+            println!("Snake {:?} looking for a rat target", snake);
+            choose_random_entity(&rats, &segments.head_position)
         } else if roll <= SNAKE_BERRY_PREFERENCE + SNAKE_RAT_PREFERENCE {
-            choose_random_entity(&berries, &snake.head_position)
+            println!("Snake {:?} looking for a berry target", snake);
+            choose_random_entity(&berries, &segments.head_position)
         } else if roll < SNAKE_WANDER_PREFERENCE + SNAKE_BERRY_PREFERENCE + SNAKE_RAT_PREFERENCE {
             // Choose a random location as the target
-            choose_random_unocc(&snake.head_position, &arena)
+            println!("Snake {:?} looking for a random location", snake);
+            choose_random_unocc(&segments.head_position, &arena)
         } else {
             None
         };
 
         println!(
-            "Head position={:?}, target={:?}",
-            snake.head_position, ai.target
+            "Snake {:?}, head position={:?}, target={:?}",
+            snake, segments.head_position, ai.target
         );
         if let Some(Target::Position(goal)) = ai.target {
-            ai.plan_path(&snake.head_position, &goal, &mut arena);
-            println!("{:?}", ai.path);
+            ai.plan_path(&segments.head_position, &goal, &mut arena);
+            println!("Snake {:?}, path {:?}", snake, ai.path);
         } else {
             // Target disappeared
             ai.clear();
@@ -782,11 +803,11 @@ fn move_mongoose(
 }
 
 fn move_rats(
-    mut rats: Query<(&mut AI, &mut Position), With<Rat>>,
+    mut rats: Query<(Entity, &mut AI, &mut Position), With<Rat>>,
     arena: ResMut<Arena>,
     time: Res<Time>,
 ) {
-    for (mut ai, mut position) in &mut rats {
+    for (rat, mut ai, mut position) in &mut rats {
         if !ai.move_timer.tick(time.delta()).finished() {
             continue;
         }
@@ -794,8 +815,8 @@ fn move_rats(
             if arena.isset(next_position.x, next_position.y) {
                 // Space is occupied or outside the arena
                 println!(
-                    "Position ({}, {}) is blocked for rat",
-                    next_position.x, next_position.y
+                    "Rat {:?}, position ({}, {}) is blocked",
+                    rat, next_position.x, next_position.y
                 );
                 ai.clear();
                 return;
@@ -809,12 +830,12 @@ fn move_rats(
 }
 
 fn move_snakes(
-    mut snakes: Query<(&mut AI, &mut Segmented), With<Snake>>,
+    mut snakes: Query<(Entity, &mut AI, &mut Segmented), With<Snake>>,
     mut positions: Query<&mut Position, With<Snake>>,
     mut arena: ResMut<Arena>,
     time: Res<Time>,
 ) {
-    for (mut ai, mut snake) in &mut snakes {
+    for (snake, mut ai, mut segments) in &mut snakes {
         if !ai.move_timer.tick(time.delta()).finished() {
             continue;
         }
@@ -822,18 +843,18 @@ fn move_snakes(
             if arena.isset(next_position.x, next_position.y) {
                 // Space is occupied or outside the arena
                 println!(
-                    "Position ({}, {}) is blocked",
-                    next_position.x, next_position.y
+                    "Snake {:?}, position ({}, {}) is blocked",
+                    snake, next_position.x, next_position.y
                 );
                 ai.clear();
                 return;
             }
-            snake.head_position.x = next_position.x;
-            snake.head_position.y = next_position.y;
-            arena.set(snake.head_position.x, snake.head_position.y);
-            let mut gap_position = snake.head_position.clone();
+            segments.head_position.x = next_position.x;
+            segments.head_position.y = next_position.y;
+            arena.set(segments.head_position.x, segments.head_position.y);
+            let mut gap_position = segments.head_position.clone();
             let mut grown = false;
-            for s in snake.segments.iter() {
+            for s in segments.segments.iter() {
                 let mut position = positions.get_mut(*s).unwrap();
                 (position.x, gap_position.x) = (gap_position.x, position.x);
                 (position.y, gap_position.y) = (gap_position.y, position.y);
@@ -866,13 +887,13 @@ fn transformation(window: Query<&Window>, mut q: Query<(&Position, &mut Transfor
 }
 
 fn set_segment_sprites(
-    things: Query<(&Segmented, Has<Mongoose>)>,
+    things: Query<(Entity, &Segmented, Has<Mongoose>)>,
     mut segments: Query<(&Position, &mut TextureAtlas)>,
 ) {
-    'things: for (thing, is_mongoose) in &things {
+    'things: for (thing, segmented, is_mongoose) in &things {
         // TODO do this only after movement, maybe check for a needs_redraw flag
-        let i_tail = thing.segments.len() - 2;
-        for (i, (f, b)) in thing.segments.iter().tuple_windows().enumerate() {
+        let i_tail = segmented.segments.len() - 2;
+        for (i, (f, b)) in segmented.segments.iter().tuple_windows().enumerate() {
             let [(pos_f, mut ta_f), (pos_b, mut ta_b)] = segments
                 .get_many_mut([*f, *b])
                 .expect("Failed to get segments pair");
@@ -888,13 +909,15 @@ fn set_segment_sprites(
             } else if pos_f.x == pos_b.x && pos_f.y == pos_b.y {
                 None // Growth just occured
             } else {
-                println!(
-                    "Segment {}, f ({}, {}), b ({}, {})",
-                    i, pos_f.x, pos_f.y, pos_b.x, pos_b.y
-                );
                 panic!(
-                    "Successive {} segments are neither adjacent nor at the same place",
-                    if is_mongoose { "mongoose" } else { "snake" }
+                    "{} {:?}, segment pair {}, f ({}, {}), b ({}, {}); successive segments are neither adjacent nor at the same place",
+                    if is_mongoose { "Mongoose" } else { "Snake" },
+                    thing,
+                    i,
+                    pos_f.x,
+                    pos_f.y,
+                    pos_b.x,
+                    pos_b.y
                 );
             };
             if direction == None {
@@ -943,7 +966,7 @@ fn eat_berries(
     mut commands: Commands,
     mut scoreboard: ResMut<Scoreboard>,
     mongoose: Query<&Segmented, With<Mongoose>>,
-    rats: Query<&Position, With<Rat>>,
+    rats: Query<(Entity, &Position), With<Rat>>,
     snakes: Query<(Entity, &Segmented), With<Snake>>,
     berries: Query<(Entity, &Position), With<Berry>>,
     mut writer: EventWriter<GrowEvent>,
@@ -957,6 +980,10 @@ fn eat_berries(
         if mongoose_position == *berry_position {
             commands.entity(berry).despawn();
             scoreboard.berries_eaten_by_mongoose += 1;
+            println!(
+                "Berry {:?} at {:?} eaten by mongoose",
+                berry, berry_position
+            );
             continue 'berries;
         }
         for (snake, snake_segments) in &snakes {
@@ -964,13 +991,21 @@ fn eat_berries(
                 commands.entity(berry).despawn();
                 scoreboard.berries_eaten_by_snakes += 1;
                 writer.send(GrowEvent { segmented: snake });
+                println!(
+                    "Berry {:?} at {:?} eaten by snake {:?}",
+                    berry, berry_position, snake
+                );
                 continue 'berries;
             }
         }
-        for position in &rats {
+        for (rat, position) in &rats {
             if *position == *berry_position {
                 commands.entity(berry).despawn();
                 scoreboard.berries_eaten_by_rats += 1;
+                println!(
+                    "Berry {:?} at {:?} eaten by rat {:?}",
+                    berry, berry_position, rat
+                );
                 continue 'berries;
             }
         }
@@ -994,6 +1029,7 @@ fn eat_rats(
         if mongoose_position == *rat_position {
             commands.entity(rat).despawn();
             scoreboard.rats_eaten_by_mongoose += 1;
+            println!("Rat {:?} at {:?} eaten by mongoose", rat, rat_position);
             continue 'rats;
         }
         for (snake, snake_segments) in &snakes {
@@ -1001,6 +1037,10 @@ fn eat_rats(
                 commands.entity(rat).despawn();
                 scoreboard.rats_eaten_by_snakes += 1;
                 writer.send(GrowEvent { segmented: snake });
+                println!(
+                    "Rat {:?} at {:?} eaten by snake {:?}",
+                    rat, rat_position, snake
+                );
                 continue 'rats;
             }
         }
@@ -1009,14 +1049,14 @@ fn eat_rats(
 
 fn grow_snakes(
     mut commands: Commands,
-    mut snakes: Query<&mut Segmented>,
+    mut snakes: Query<(Entity, &mut Segmented), With<Snake>>,
     positions: Query<&Position>,
     mut reader: EventReader<GrowEvent>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
     for event in reader.read() {
-        if let Ok(mut segmented) = snakes.get_mut(event.segmented) {
+        if let Ok((snake, mut segmented)) = snakes.get_mut(event.segmented) {
             let texture = asset_server.load("snake.png");
             let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
                 Vec2::splat(40.0),
@@ -1026,25 +1066,36 @@ fn grow_snakes(
                 None,
             ));
             let tail_position = positions
-                .get(*segmented.segments.last().expect("Segments vector is empty"))
-                .expect("Tail position missing")
+                .get(
+                    *segmented
+                        .segments
+                        .last()
+                        .expect(&format!("Snake {:?}. segments vector is empty", snake)),
+                )
+                .expect(&format!(
+                    "Snake {:?}, length {:?}. tail segment position missing",
+                    snake,
+                    segmented.segments.len(),
+                )) // FIXME: clippy will convert this so the format occured only when an error occurs
                 .clone();
-            segmented.segments.push(
-                commands
-                    .spawn((
-                        SpriteBundle {
-                            texture: texture.clone(),
-                            ..default()
-                        },
-                        TextureAtlas {
-                            layout: texture_atlas_layout.clone(),
-                            ..default()
-                        },
-                        tail_position,
-                        Snake,
-                    ))
-                    .id(),
-            )
+            let new_segment = commands
+                .spawn((
+                    SpriteBundle {
+                        texture: texture.clone(),
+                        ..default()
+                    },
+                    TextureAtlas {
+                        layout: texture_atlas_layout.clone(),
+                        ..default()
+                    },
+                    tail_position,
+                    Snake,
+                ))
+                .id();
+            println!("Snake {:?} got new segment {:?}", snake, new_segment);
+            segmented.segments.push(new_segment);
+        } else {
+            panic!("Error getting snake {:?}", event.segmented); // FIXME turn this into a log after snakes can despawn
         }
     }
 }
@@ -1108,17 +1159,20 @@ fn main() {
         .insert_resource(Arena::new())
         .insert_resource(Scoreboard { ..default() })
         .insert_resource(ClearColor(BACKGROUND_COLOR))
-        .insert_resource(InputTimer(Timer::from_seconds(0.2, TimerMode::Once)))
+        .insert_resource(InputTimer(Timer::from_seconds(
+            INPUT_PERIOD,
+            TimerMode::Once,
+        )))
         .insert_resource(BerrySpawnTimer(Timer::from_seconds(
-            3.0,
+            BERRY_SPAWN_PERIOD,
             TimerMode::Repeating,
         )))
         .insert_resource(RatSpawnTimer(Timer::from_seconds(
-            5.0,
+            RAT_SPAWN_PERIOD,
             TimerMode::Repeating,
         )))
         .insert_resource(SnakeSpawnTimer(Timer::from_seconds(
-            5.0,
+            SNAKE_SPAWN_PERIOD,
             TimerMode::Repeating,
         )))
         .add_systems(
@@ -1147,6 +1201,7 @@ fn main() {
                 set_segment_sprites,
                 spawn_berries,
                 transformation,
+                detect_removals,
             )
                 .chain(),
         )
@@ -1192,5 +1247,12 @@ fn pretty_print(a: &Array2D<bool>) {
             );
         }
         println!();
+    }
+}
+
+fn detect_removals(mut removals: RemovedComponents<Position>) {
+    for entity in removals.read() {
+        // do something with the entity
+        eprintln!("Entity {:?} position removed.", entity);
     }
 }
