@@ -17,6 +17,8 @@ use bevy::{
 const ARENA_HEIGHT: i32 = 20;
 const ARENA_WIDTH: i32 = 20;
 
+const TILE_SIZE: Vec2 = Vec2::splat(40.0);
+
 const SCOREBOARD_FONT_SIZE: f32 = 40.0;
 const SCOREBOARD_TEXT_PADDING: Val = Val::Px(5.0);
 
@@ -240,11 +242,7 @@ impl Arena {
         return occ;
     }
     fn isset(&self, x: i32, y: i32) -> bool {
-        if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
-            // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
-            return false;
-        }
-        self.occ[(x as usize, y as usize)].is_some()
+        self.occ(x, y).is_some()
     }
     fn occ(&self, x: i32, y: i32) -> Option<Occupancy> {
         if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
@@ -327,7 +325,7 @@ fn spawn_berries(
     };
     let texture = asset_server.load("berry.png");
     let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
-        Vec2::splat(40.0),
+        TILE_SIZE,
         SPRITE_SHEET_COLUMNS,
         SPRITE_SHEET_ROWS,
         None,
@@ -358,7 +356,7 @@ fn spawn_mongoose(
 ) {
     let texture = asset_server.load("mongoose.png");
     let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
-        Vec2::splat(40.0),
+        TILE_SIZE,
         SPRITE_SHEET_COLUMNS,
         SPRITE_SHEET_ROWS,
         None,
@@ -445,7 +443,7 @@ fn spawn_rats(
     };
     let texture = asset_server.load("rat.png");
     let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
-        Vec2::splat(40.0),
+        TILE_SIZE,
         SPRITE_SHEET_COLUMNS,
         SPRITE_SHEET_ROWS,
         None,
@@ -528,7 +526,7 @@ fn spawn_snake(
     let (mut x, mut y) = (x, y);
     let texture = asset_server.load("snake.png");
     let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
-        Vec2::splat(40.0),
+        TILE_SIZE,
         SPRITE_SHEET_COLUMNS,
         SPRITE_SHEET_ROWS,
         None,
@@ -666,7 +664,7 @@ fn plan_snakes(
     mut arena: ResMut<Arena>,
     time: Res<Time>,
 ) {
-    for (snake, mut ai, segments) in &mut snakes {
+    for (snake, mut ai, segmented) in &mut snakes {
         if !ai.plan_timer.tick(time.delta()).finished() {
             continue;
         }
@@ -680,24 +678,24 @@ fn plan_snakes(
         let roll = rng.gen_range(0..10);
         ai.target = if roll <= SNAKE_RAT_PREFERENCE {
             println!("Snake {:?} looking for a rat target", snake);
-            choose_random_entity(&rats, &segments.head_position)
+            choose_random_entity(&rats, &segmented.head_position)
         } else if roll <= SNAKE_BERRY_PREFERENCE + SNAKE_RAT_PREFERENCE {
             println!("Snake {:?} looking for a berry target", snake);
-            choose_random_entity(&berries, &segments.head_position)
+            choose_random_entity(&berries, &segmented.head_position)
         } else if roll < SNAKE_WANDER_PREFERENCE + SNAKE_BERRY_PREFERENCE + SNAKE_RAT_PREFERENCE {
             // Choose a random location as the target
             println!("Snake {:?} looking for a random location", snake);
-            choose_random_unocc(&segments.head_position, &arena)
+            choose_random_unocc(&segmented.head_position, &arena)
         } else {
             None
         };
 
         println!(
             "Snake {:?}, head position={:?}, target={:?}",
-            snake, segments.head_position, ai.target
+            snake, segmented.head_position, ai.target
         );
         if let Some(Target::Position(goal)) = ai.target {
-            ai.plan_path(&segments.head_position, &goal, &mut arena);
+            ai.plan_path(&segmented.head_position, &goal, &mut arena);
             println!("Snake {:?}, path {:?}", snake, ai.path);
         } else {
             // Target disappeared
@@ -795,36 +793,36 @@ fn move_mongoose(
         panic!();
     };
 
-    let (mongoose, segments) = mongoose.get_single_mut().expect("Mongoose entity missing");
+    let (mongoose, segmented) = mongoose.get_single_mut().expect("Mongoose entity missing");
 
-    if segments.head_position.x == 0 && next_direction == LEFT {
+    if segmented.head_position.x == 0 && next_direction == LEFT {
         return;
     }
-    if segments.head_position.y == ARENA_HEIGHT - 1 && next_direction == UP {
+    if segmented.head_position.y == ARENA_HEIGHT - 1 && next_direction == UP {
         return;
     }
-    if segments.head_position.x == ARENA_WIDTH - 1 && next_direction == RIGHT {
+    if segmented.head_position.x == ARENA_WIDTH - 1 && next_direction == RIGHT {
         return;
     }
-    if segments.head_position.y == 0 && next_direction == DOWN {
+    if segmented.head_position.y == 0 && next_direction == DOWN {
         return;
     }
     let (x, y) = (
-        segments.head_position.x + delta_x,
-        segments.head_position.y + delta_y,
+        segmented.head_position.x + delta_x,
+        segmented.head_position.y + delta_y,
     );
     match arena.occ(x, y) {
-        None => move_mongoose_segments(arena, mongoose, segments, positions, delta_x, delta_y),
+        None => move_mongoose_segments(arena, mongoose, segmented, positions, delta_x, delta_y),
         Some(Occupancy::Berry(berry)) => {
             arena.unset(x, y);
-            move_mongoose_segments(arena, mongoose, segments, positions, delta_x, delta_y);
+            move_mongoose_segments(arena, mongoose, segmented, positions, delta_x, delta_y);
             commands.entity(berry).despawn();
             scoreboard.berries_eaten_by_mongoose += 1;
             println!("Berry {:?} eaten by mongoose", berry)
         }
         Some(Occupancy::Rat(rat)) => {
             arena.unset(x, y);
-            move_mongoose_segments(arena, mongoose, segments, positions, delta_x, delta_y);
+            move_mongoose_segments(arena, mongoose, segmented, positions, delta_x, delta_y);
             commands.entity(rat).despawn();
             scoreboard.rats_eaten_by_mongoose += 1;
             println!("Rat {:?} eaten by mongoose", rat)
@@ -837,7 +835,7 @@ fn move_mongoose(
 
 fn move_mongoose_segments(
     mut arena: ResMut<Arena>,
-    entity: Entity,
+    mongoose: Entity,
     mut segmented: Mut<Segmented>,
     mut positions: Query<&mut Position, With<Mongoose>>,
     delta_x: i32,
@@ -848,7 +846,7 @@ fn move_mongoose_segments(
     arena.set(
         segmented.head_position.x,
         segmented.head_position.y,
-        Occupancy::Mongoose(entity),
+        Occupancy::Mongoose(mongoose),
     );
     let mut gap_position = segmented.head_position.clone();
     for s in segmented.segments.iter() {
@@ -907,7 +905,7 @@ fn move_snakes(
     mut arena: ResMut<Arena>,
     time: Res<Time>,
 ) {
-    for (snake, mut ai, segments) in &mut snakes {
+    for (snake, mut ai, segmented) in &mut snakes {
         if !ai.move_timer.tick(time.delta()).finished() {
             continue;
         }
@@ -915,18 +913,30 @@ fn move_snakes(
             let (x, y) = (next_position.x, next_position.y);
             match arena.occ(x, y) {
                 None => {
-                    move_snake_segments(snake, next_position, segments, &mut arena, &mut positions)
+                    move_snake_segments(&mut arena, snake, segmented, &mut positions, next_position)
                 }
                 Some(Occupancy::Berry(berry)) => {
                     arena.unset(x, y);
-                    move_snake_segments(snake, next_position, segments, &mut arena, &mut positions);
+                    move_snake_segments(
+                        &mut arena,
+                        snake,
+                        segmented,
+                        &mut positions,
+                        next_position,
+                    );
                     commands.entity(berry).despawn();
                     scoreboard.berries_eaten_by_snakes += 1;
                     println!("Berry {:?} eaten by snake", berry)
                 }
                 Some(Occupancy::Rat(rat)) => {
                     arena.unset(x, y);
-                    move_snake_segments(snake, next_position, segments, &mut arena, &mut positions);
+                    move_snake_segments(
+                        &mut arena,
+                        snake,
+                        segmented,
+                        &mut positions,
+                        next_position,
+                    );
                     commands.entity(rat).despawn();
                     scoreboard.rats_eaten_by_snakes += 1;
                     println!("Rat {:?} eaten by snake", rat)
@@ -940,6 +950,7 @@ fn move_snakes(
                     ai.clear();
                 }
                 Some(Occupancy::Snake(other_snake)) => {
+                    // other_snake is equal to snake if the snake bumps into itself
                     println!(
                         "Snake {:?}, position ({}, {}) is blocked by snake {:?}",
                         snake, next_position.x, next_position.y, other_snake
@@ -953,22 +964,22 @@ fn move_snakes(
 }
 
 fn move_snake_segments(
-    snake: Entity,
-    next_position: Position,
-    mut segments: Mut<Segmented>,
     arena: &mut ResMut<Arena>,
+    snake: Entity,
+    mut segmented: Mut<Segmented>,
     positions: &mut Query<&mut Position, With<Snake>>,
+    next_position: Position,
 ) {
-    segments.head_position.x = next_position.x;
-    segments.head_position.y = next_position.y;
+    segmented.head_position.x = next_position.x;
+    segmented.head_position.y = next_position.y;
     arena.set(
-        segments.head_position.x,
-        segments.head_position.y,
+        segmented.head_position.x,
+        segmented.head_position.y,
         Occupancy::Snake(snake),
     );
-    let mut gap_position = segments.head_position.clone();
+    let mut gap_position = segmented.head_position.clone();
     let mut grown = false;
-    for s in segments.segments.iter() {
+    for s in segmented.segments.iter() {
         let mut position = positions.get_mut(*s).unwrap();
         (position.x, gap_position.x) = (gap_position.x, position.x);
         (position.y, gap_position.y) = (gap_position.y, position.y);
@@ -998,13 +1009,13 @@ fn transformation(window: Query<&Window>, mut q: Query<(&Position, &mut Transfor
 
 fn set_segment_sprites(
     things: Query<(Entity, &Segmented, Has<Mongoose>)>,
-    mut segments: Query<(&Position, &mut TextureAtlas)>,
+    mut query: Query<(&Position, &mut TextureAtlas)>,
 ) {
     'things: for (thing, segmented, is_mongoose) in &things {
         // TODO do this only after movement, maybe check for a needs_redraw flag
         let i_tail = segmented.segments.len() - 2;
         for (i, (f, b)) in segmented.segments.iter().tuple_windows().enumerate() {
-            let [(pos_f, mut ta_f), (pos_b, mut ta_b)] = segments
+            let [(pos_f, mut ta_f), (pos_b, mut ta_b)] = query
                 .get_many_mut([*f, *b])
                 .expect("Failed to get segments pair");
 
@@ -1054,12 +1065,7 @@ fn set_segment_sprites(
                         (RIGHT, UP) => CCW_UP,
                         (DOWN, RIGHT) => CCW_RIGHT,
                         (LEFT, DOWN) => CCW_DOWN,
-                        _ => 0, // FIXME restore the panic after we've implemented segments collision detection
-                                /*_ => panic!(
-                                    "Nonsense pair of directions {} {}",
-                                    direction.unwrap(),
-                                    ta_f.index
-                                ),*/
+                        _ => panic!("Nonsense pair of directions {} {}", direction, ta_f.index),
                     };
             }
             if i == i_tail {
@@ -1084,7 +1090,7 @@ fn grow_snakes(
         if let Ok((snake, mut segmented)) = snakes.get_mut(event.segmented) {
             let texture = asset_server.load("snake.png");
             let texture_atlas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
-                Vec2::splat(40.0),
+                TILE_SIZE,
                 SPRITE_SHEET_COLUMNS,
                 SPRITE_SHEET_ROWS,
                 None,
@@ -1171,8 +1177,8 @@ fn main() {
                 primary_window: Some(Window {
                     title: "Mongoose!".into(),
                     resolution: WindowResolution::new(
-                        (40 * ARENA_WIDTH) as f32,
-                        (40 * ARENA_HEIGHT) as f32,
+                        TILE_SIZE[0] * ARENA_WIDTH as f32,
+                        TILE_SIZE[1] * ARENA_HEIGHT as f32,
                     )
                     .with_scale_factor_override(1.0),
                     ..default()
