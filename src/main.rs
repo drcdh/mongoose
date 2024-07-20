@@ -298,7 +298,10 @@ impl AI {
                 .collect();
         }
     }
-    fn clear(&mut self) {
+    fn abandon_path(&mut self) {
+        self.path.clear();
+    }
+    fn abandon_target(&mut self) {
         self.path.clear();
         self.target = None;
     }
@@ -625,6 +628,28 @@ fn plan_rats(
             continue;
         }
 
+        // No path set, but might already have a target
+        if let Some(goal) = match ai.target {
+            Some(Target::Entity(entity)) => {
+                if let Ok((_, &position)) = berries.get(entity) {
+                    Some(position)
+                } else {
+                    // Target despawned
+                    None
+                }
+            }
+            Some(Target::Position(position)) => Some(position),
+            None => None,
+        } {
+            ai.plan_path(&position, &goal, &mut arena);
+            println!("Rat {:?}, target {:?}, path {:?}", rat, ai.target, ai.path);
+            continue;
+        } else {
+            // Target despawned
+            ai.abandon_target();
+        }
+
+        // No target, so maybe choose a new one
         let mut rng = thread_rng();
         let roll = rng.gen_range(0..10);
         ai.target = if roll <= RAT_BERRY_PREFERENCE {
@@ -635,6 +660,7 @@ fn plan_rats(
             println!("Rat {:?} looking for a random location", rat);
             choose_random_unocc(&position, &arena)
         } else {
+            println!("Rat {:?} is twiddling its thumbs", rat);
             None
         };
 
@@ -642,18 +668,6 @@ fn plan_rats(
             "Rat {:?}, position={:?}, target={:?}",
             rat, position, ai.target
         );
-
-        if let Some(goal) = match ai.target {
-            Some(Target::Entity(entity)) => Some(*berries.get(entity).unwrap().1),
-            Some(Target::Position(position)) => Some(position),
-            None => None,
-        } {
-            ai.plan_path(&position, &goal, &mut arena);
-            println!("Rat {:?}, path {:?}", rat, ai.path);
-        } else {
-            // Target disappeared
-            ai.clear();
-        }
     }
 }
 
@@ -671,7 +685,31 @@ fn plan_snakes(
         ai.plan_timer.reset();
 
         if ai.path.len() > 0 {
+            // Already moving toward something
             continue;
+        }
+
+        // No path set, but might already have a target
+        if let Some(goal) = match ai.target {
+            Some(Target::Entity(entity)) => {
+                if let Ok((_, &position)) = berries.get(entity) {
+                    Some(position)
+                } else if let Ok((_, &position)) = rats.get(entity) {
+                    Some(position)
+                } else {
+                    // Target despawned
+                    None
+                }
+            }
+            Some(Target::Position(position)) => Some(position),
+            None => None,
+        } {
+            ai.plan_path(&segmented.head_position, &goal, &mut arena);
+            println!("Snake {:?}, path {:?}", snake, ai.path);
+            continue;
+        } else {
+            // Target despawned
+            ai.abandon_target();
         }
 
         let mut rng = thread_rng();
@@ -687,6 +725,7 @@ fn plan_snakes(
             println!("Snake {:?} looking for a random location", snake);
             choose_random_unocc(&segmented.head_position, &arena)
         } else {
+            println!("Snake {:?} is twiddling its thumbs", snake);
             None
         };
 
@@ -694,13 +733,6 @@ fn plan_snakes(
             "Snake {:?}, head position={:?}, target={:?}",
             snake, segmented.head_position, ai.target
         );
-        if let Some(Target::Position(goal)) = ai.target {
-            ai.plan_path(&segmented.head_position, &goal, &mut arena);
-            println!("Snake {:?}, path {:?}", snake, ai.path);
-        } else {
-            // Target disappeared
-            ai.clear();
-        }
     }
 }
 
@@ -889,7 +921,7 @@ fn move_rats(
                         "Rat {:?}, position ({}, {}) is blocked",
                         rat, next_position.x, next_position.y
                     );
-                    ai.clear();
+                    ai.abandon_path();
                 }
             }
             ai.move_timer.reset();
@@ -903,6 +935,7 @@ fn move_snakes(
     mut snakes: Query<(Entity, &mut AI, &mut Segmented), With<Snake>>,
     mut positions: Query<&mut Position, With<Snake>>,
     mut arena: ResMut<Arena>,
+    mut writer: EventWriter<GrowEvent>,
     time: Res<Time>,
 ) {
     for (snake, mut ai, segmented) in &mut snakes {
@@ -926,7 +959,8 @@ fn move_snakes(
                     );
                     commands.entity(berry).despawn();
                     scoreboard.berries_eaten_by_snakes += 1;
-                    println!("Berry {:?} eaten by snake", berry)
+                    writer.send(GrowEvent { segmented: snake });
+                    println!("Snake {:?} ate berry {:?}", snake, berry)
                 }
                 Some(Occupancy::Rat(rat)) => {
                     arena.unset(x, y);
@@ -939,7 +973,8 @@ fn move_snakes(
                     );
                     commands.entity(rat).despawn();
                     scoreboard.rats_eaten_by_snakes += 1;
-                    println!("Rat {:?} eaten by snake", rat)
+                    writer.send(GrowEvent { segmented: snake });
+                    println!("Snake {:?} ate rat {:?}", snake, rat)
                 }
                 Some(Occupancy::Mongoose(_)) => {
                     // Snakes attacking Mongoose is unimplemented
@@ -947,7 +982,7 @@ fn move_snakes(
                         "Snake {:?}, position ({}, {}) is blocked by mongoose",
                         snake, next_position.x, next_position.y
                     );
-                    ai.clear();
+                    ai.abandon_path();
                 }
                 Some(Occupancy::Snake(other_snake)) => {
                     // other_snake is equal to snake if the snake bumps into itself
@@ -955,7 +990,7 @@ fn move_snakes(
                         "Snake {:?}, position ({}, {}) is blocked by snake {:?}",
                         snake, next_position.x, next_position.y, other_snake
                     );
-                    ai.clear();
+                    ai.abandon_path();
                 }
             }
         }

@@ -17,9 +17,9 @@ Snakes grow larger when eating, but what eats the snakes?
   - [x] spawn periodically
     - [ ] spawn with likelihood dependent on population
   - [x] sprite
-  - [ ] periodically target mice and berries
+  - [x] periodically target rats and berries
   - [ ] target mongoose if attacked (i.e. damage causes aggro)
-- [ ] Mice
+- [ ] Rats
   - [x] spawn periodically
     - [ ] spawn with likelihood dependent on population
   - [x] sprite
@@ -28,6 +28,6 @@ Snakes grow larger when eating, but what eats the snakes?
   - [x] some score
   - [ ] number of berries eaten
   - [ ] number of snakes killed
-  - [ ] number of mice killed
-  - [ ] number of mice escaped
+  - [ ] number of rats killed
+  - [ ] number of rats escaped
 - [ ] Background art (grass, dirt, etc.)
