@@ -148,21 +148,21 @@ impl Arena {
     fn new() -> Arena {
         let mut graph = Graph::<(), (), Undirected>::new_undirected();
         let mut nodes = BiMap::<(i32, i32), NodeIndex>::new();
-        for x in 0..ARENA_WIDTH {
-            for y in 0..ARENA_HEIGHT {
+        for x in -1..=ARENA_WIDTH {
+            for y in -1..=ARENA_HEIGHT {
                 nodes.insert((x, y), graph.add_node(()));
             }
         }
-        for i in 0..ARENA_WIDTH {
-            for j in 0..ARENA_HEIGHT {
-                if i < (ARENA_WIDTH - 1) {
+        for i in -1..=ARENA_WIDTH {
+            for j in -1..=ARENA_HEIGHT {
+                if i < ARENA_WIDTH {
                     graph.add_edge(
                         *nodes.get_by_left(&(i, j)).unwrap(),
                         *nodes.get_by_left(&(i + 1, j)).unwrap(),
                         (),
                     );
                 }
-                if j < (ARENA_HEIGHT - 1) {
+                if j < ARENA_HEIGHT {
                     graph.add_edge(
                         *nodes.get_by_left(&(i, j)).unwrap(),
                         *nodes.get_by_left(&(i, j + 1)).unwrap(),
@@ -171,6 +171,7 @@ impl Arena {
                 }
             }
         }
+        // Don't bother keeping track of things offscreen, like freshly spawned snakes and escaped rats.
         let occ = Array2D::filled_with(None, ARENA_WIDTH as usize, ARENA_HEIGHT as usize);
         Arena { graph, nodes, occ }
     }
@@ -217,7 +218,6 @@ impl Arena {
     }
     fn unset(&mut self, x: i32, y: i32) -> Option<Occupancy> {
         if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
-            // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
             return None;
         }
         if self.occ[(x as usize, y as usize)].is_none() {
@@ -233,7 +233,6 @@ impl Arena {
     }
     fn unset_maybe(&mut self, x: i32, y: i32) -> Option<Occupancy> {
         if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
-            // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
             return None;
         }
         let occ = self.occ[(x as usize, y as usize)];
@@ -246,7 +245,6 @@ impl Arena {
     }
     fn occ(&self, x: i32, y: i32) -> Option<Occupancy> {
         if x >= ARENA_WIDTH || x < 0 || y >= ARENA_HEIGHT || y < 0 {
-            // Don't bother keeping track of things offscreen, like freshly spawned snakes. Is this a good idea??
             return None;
         }
         self.occ[(x as usize, y as usize)]
@@ -492,10 +490,10 @@ fn spawn_snakes(
         let p = rng.gen_range(0..ARENA_HEIGHT - 1);
         let side = rng.gen_range(0..4);
         let (x, y, delta_x, delta_y) = match side {
-            LEFT => (0, p, -1, 0),
-            UP => (p, ARENA_HEIGHT - 1, 0, 1),
-            RIGHT => (ARENA_WIDTH - 1, p, 1, 0),
-            DOWN => (p, 0, 0, -1),
+            LEFT => (-1, p, -1, 0),
+            UP => (p, ARENA_HEIGHT, 0, 1),
+            RIGHT => (ARENA_WIDTH, p, 1, 0),
+            DOWN => (p, -1, 0, -1),
             _ => panic!("Bad spawn side"),
         };
         if !arena.isset(x, y) {
